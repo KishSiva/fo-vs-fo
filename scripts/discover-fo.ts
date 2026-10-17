@@ -17,7 +17,7 @@ const need = (k: string) => {
   return v;
 };
 
-const role = need('PROXY_ROLE');
+const role = need('PROXY_ID');
 const owner = need('OWNER_NAME');
 const client = await connectFo({
   url: need('FO_MCP_URL'),

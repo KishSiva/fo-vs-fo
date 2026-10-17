@@ -9,10 +9,16 @@
   "scripts": {
     "discover:fo": "tsx scripts/discover-fo.ts",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "proxy:1": "tsx apps/proxy/src/main.ts --env .env.agent1",
+    "proxy:2": "tsx apps/proxy/src/main.ts --env .env.agent2",
+    "seed": "tsx scripts/seed-deal.ts",
+    "dashboard": "pnpm --filter @proxydeal/dashboard dev",
+    "mock": "MOCK_FO=1 TIME_SCALE=0.01 WORKER_INTERVAL_MS=3000 concurrently -k -n a1,a2 \"pnpm proxy:1\" \"pnpm proxy:2\""
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "concurrently": "^10.0.6",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
@@ -20,6 +26,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@proxydeal/core": "workspace:^",
     "@proxydeal/fo": "workspace:*",
     "@proxydeal/llm": "workspace:*",
     "dotenv": "^16.4.5"

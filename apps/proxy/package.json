@@ -1,0 +1,22 @@
+{
+  "name": "@proxydeal/proxy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "once": "tsx src/main.ts --once"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@fastify/cors": "^11.3.1",
+    "@proxydeal/core": "workspace:^",
+    "@proxydeal/fo": "workspace:^",
+    "@proxydeal/llm": "workspace:^",
+    "@proxydeal/verify": "workspace:^",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.7",
+    "pino": "^10.4.0"
+  }
+}
