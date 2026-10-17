@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { existsSync, readFileSync } from 'node:fs';
 import { and, asc, eq, gte, desc } from 'drizzle-orm';
 import { approvals, commitments, deals, events, offers, verifications, foCapabilities, redactMandate, now } from '@proxydeal/core';
+import { cacheStats, cacheTtl } from '@proxydeal/llm';
 import type { Store } from './store.js';
 import type { Config } from './config.js';
 import type { Worker } from './worker.js';
@@ -21,6 +22,7 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     worker: { lastBeat: worker.lastBeat },
     foSignedIn: foSignedIn(),
     mockFo: cfg.mockFo,
+    promptCache: { prefixTtl: cacheTtl(), routes: cacheStats() },
   }));
 
   app.get('/api/deals', async () => db.select().from(deals).orderBy(desc(deals.createdAt)).all());

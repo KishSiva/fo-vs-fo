@@ -28,3 +28,4 @@ export function hasApiKey(): boolean {
 export * from './prompts.js';
 export * from './tools.js';
 export * from './guards.js';
+export * from './cache.js';

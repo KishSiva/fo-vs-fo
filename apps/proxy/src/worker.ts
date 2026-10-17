@@ -3,12 +3,14 @@ import { eq } from 'drizzle-orm';
 import type { FoAdapter } from '@proxydeal/fo';
 import type { Config } from './config.js';
 import { completeAction } from './handlers.js';
-import { runTurn } from './orchestrator.js';
+import { runTurn, prewarm } from './orchestrator.js';
 import { pollInbound } from './inbound.js';
 import { hashPayload, type Store } from './store.js';
 
 const MAX_FO_POLLS = 80; // ~20 minutes at 15s
 const INBOUND_EVERY_MS = 30_000;
+// Re-warm just under the 1-hour TTL so idle deals don't start their next turn cold.
+const REWARM_EVERY_MS = 55 * 60_000;
 
 export class Worker {
   lastBeat: string | null = null;
@@ -21,6 +23,7 @@ export class Worker {
     const n = this.store.recoverJobs();
     if (n) this.store.log.warn({ recovered: n }, 'requeued jobs left running by a previous process');
     this.ensureInboundPoller();
+    this.ensureCacheWarmer();
     this.timer = setInterval(() => void this.tick(), this.cfg.workerIntervalMs);
     void this.tick();
   }
@@ -31,6 +34,11 @@ export class Worker {
   private ensureInboundPoller() {
     const exists = this.store.db.$client.prepare("SELECT 1 FROM jobs WHERE type='inbound_poll' AND status IN ('pending','running')").get();
     if (!exists) this.store.enqueue('inbound_poll', {});
+  }
+
+  private ensureCacheWarmer() {
+    this.store.db.$client.prepare("UPDATE jobs SET status='cancelled' WHERE type='cache_warm' AND status='pending'").run();
+    this.store.enqueue('cache_warm', {});
   }
 
   async tick(): Promise<number> {
@@ -68,6 +76,14 @@ export class Worker {
       case 'inbound_poll':
         try { await pollInbound(this.store, this.fo, this.cfg); }
         finally { this.store.enqueue('inbound_poll', {}, { inMs: INBOUND_EVERY_MS }); }
+        return;
+      case 'cache_warm':
+        try {
+          for (const d of this.store.openDeals()) {
+            const u = await prewarm({ store: this.store, fo: this.fo, cfg: this.cfg, dealId: d.id });
+            this.store.log.info({ dealId: d.id, cacheWrite: u.cache_creation_input_tokens, cacheRead: u.cache_read_input_tokens }, 'prompt cache warmed');
+          }
+        } finally { this.store.enqueue('cache_warm', {}, { inMs: REWARM_EVERY_MS }); }
         return;
       case 'fo_poll': {
         const st = await this.fo.status(p.foTaskId);

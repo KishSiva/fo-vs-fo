@@ -1,5 +1,6 @@
 import type { Channel, Mandate } from '@proxydeal/core';
 import { anthropic, model } from './index.js';
+import { prefixCache, trackUsage } from './cache.js';
 
 export interface GuardResult {
   ok: boolean;
@@ -43,9 +44,15 @@ export function redactPrivate(script: string, m: Mandate, allowAmount?: number):
 
 /** Model pass: catches paraphrased leaks the regex can't ("I can't go much under four-fifty"). */
 export async function modelLeakCheck(script: string, m: Mandate, role: 'seller' | 'buyer'): Promise<{ leak: boolean; what: string[] }> {
+  // Instructions + private facts are stable per deal: cached prefix. The message is the unique tail.
+  const system = `A ${role}'s negotiation agent is about to send a message. PRIVATE facts it must not reveal, even indirectly (paraphrase, hints like "can't go much lower than", spelled-out numbers):\n` +
+    `- ${role === 'seller' ? 'minimum acceptable price' : 'maximum budget'}: $${m.floorOrCeiling}\n` +
+    Object.entries(m.secrets).map(([k, v]) => `- ${k}: ${v}`).join('\n') +
+    '\nStating a concrete offer amount is fine. Does the message reveal any private fact? List which.';
   const res = await anthropic().messages.create({
     model: model('cheap'),
     max_tokens: 1024,
+    system: [{ type: 'text', text: system, cache_control: prefixCache() }],
     output_config: {
       effort: 'low',
       format: {
@@ -58,14 +65,9 @@ export async function modelLeakCheck(script: string, m: Mandate, role: 'seller' 
         },
       },
     },
-    messages: [{
-      role: 'user',
-      content: `A ${role}'s negotiation agent is about to send the message below. PRIVATE facts it must not reveal, even indirectly (paraphrase, hints like "can't go much lower than", spelled-out numbers):\n` +
-        `- ${role === 'seller' ? 'minimum acceptable price' : 'maximum budget'}: $${m.floorOrCeiling}\n` +
-        Object.entries(m.secrets).map(([k, v]) => `- ${k}: ${v}`).join('\n') +
-        `\nStating a concrete offer amount is fine. Does the message reveal any private fact? List which.\n\nMESSAGE:\n${script}`,
-    }],
+    messages: [{ role: 'user', content: `MESSAGE:\n${script}` }],
   });
+  trackUsage('leak_check', res.usage);
   const text = res.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
   try { return JSON.parse(text); } catch { return { leak: true, what: ['unparseable leak check (fail closed)'] }; }
 }

@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { events, verifications, now, type DB } from '@proxydeal/core';
-import { anthropic, model } from '@proxydeal/llm';
+import { anthropic, model, prefixCache, trackUsage } from '@proxydeal/llm';
 
 export interface Evidence { source: 'counterparty' | 'fo' | 'system'; ref: string; text: string }
 
@@ -47,6 +47,11 @@ export async function verify(db: DB, dealId: string, stage: string, expected: st
     const res = await anthropic().messages.create({
       model: model('cheap'),
       max_tokens: 2048,
+      system: [{
+        type: 'text',
+        text: 'You verify claims about a used-item deal against recorded evidence. Be strict: a vague or conditional statement does not count, and the most recent statement wins if they conflict. Quote the exact supporting sentence(s) verbatim with their ref.',
+        cache_control: prefixCache(),
+      }],
       output_config: {
         effort: 'low',
         format: {
@@ -65,12 +70,14 @@ export async function verify(db: DB, dealId: string, stage: string, expected: st
       },
       messages: [{
         role: 'user',
-        content: `Decide whether the evidence proves this is true: "${expected}".\n` +
-          `Be strict: a vague or conditional statement does not count, and the most recent statement wins if they conflict. ` +
-          `Quote the exact supporting sentence(s) verbatim with their ref.\n\n` +
-          pool.map((e) => `[${e.ref}] (${e.source}) ${e.text}`).join('\n\n'),
+        content: [
+          // Evidence only grows, so it is a reusable prefix across verify() calls for this deal.
+          { type: 'text', text: `EVIDENCE:\n${pool.map((e) => `[${e.ref}] (${e.source}) ${e.text}`).join('\n\n')}`, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: `Decide whether the evidence proves this is true: "${expected}".` },
+        ],
       }],
     });
+    trackUsage('verify', res.usage);
     const text = res.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
     let parsed: { passed: boolean; observed: string; quotes: { ref: string; quote: string }[] };
     try { parsed = JSON.parse(text); } catch { parsed = { passed: false, observed: 'Verifier output unparseable', quotes: [] }; }

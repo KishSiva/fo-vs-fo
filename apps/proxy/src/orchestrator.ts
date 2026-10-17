@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { allowedTools, STAGE_SPECS, type Stage } from '@proxydeal/core';
-import { anthropic, model, stableSystem, dealSystem, TOOLS } from '@proxydeal/llm';
+import { anthropic, model, stableSystem, dealSystem, TOOLS, prefixCache, autoCache, trackUsage } from '@proxydeal/llm';
 import { HANDLERS, ToolError, type Ctx } from './handlers.js';
 
 const MAX_ROUNDS = 6;
@@ -30,6 +30,51 @@ function stateMessage(ctx: Ctx, trigger: Trigger): string {
   ].join('\n\n');
 }
 
+/**
+ * Cached prefix: tools -> stable instructions (breakpoint, shared by every deal) ->
+ * deal mandate (breakpoint, stable per deal). Both are 1-hour entries. Everything
+ * that changes per turn goes in messages, after the last breakpoint.
+ */
+function prefix(ctx: Ctx) {
+  const { store, dealId, cfg } = ctx;
+  const deal = store.deal(dealId)!;
+  const modelId = model(deal.stage === 'NEGOTIATING' ? 'negotiate' : 'orchestrator');
+  const system: Anthropic.Beta.BetaTextBlockParam[] = [
+    { type: 'text', text: stableSystem(cfg.owner, cfg.role), cache_control: prefixCache() },
+    { type: 'text', text: dealSystem(dealId, deal.item, cfg.role, store.mandate(dealId)), cache_control: prefixCache() },
+  ];
+  return { modelId, system };
+}
+
+/** Request fields shared by real turns and the warm-up, so both hit the same cache entry. */
+function requestBase(modelId: string, system: Anthropic.Beta.BetaTextBlockParam[]) {
+  return {
+    model: modelId,
+    thinking: { type: 'adaptive' as const },
+    output_config: { effort: 'high' as const },
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default' as const,
+    system,
+    tools: TOOLS,
+  };
+}
+
+/**
+ * Pre-warm the tools + system cache with a max_tokens: 0 request (prefill only,
+ * no output billed). No top-level cache_control, so the entry is keyed to the
+ * shared prefix rather than the placeholder message.
+ */
+export async function prewarm(ctx: Ctx) {
+  const { modelId, system } = prefix(ctx);
+  const res = await anthropic().beta.messages.create({
+    ...requestBase(modelId, system),
+    max_tokens: 0,
+    messages: [{ role: 'user', content: 'warm' }],
+  });
+  trackUsage('prewarm', res.usage);
+  return res.usage;
+}
+
 /** One orchestrator turn for one trigger. Idempotent on trigger.id. */
 export async function runTurn(ctx: Ctx, trigger: Trigger): Promise<void> {
   const { store, dealId, cfg } = ctx;
@@ -38,29 +83,19 @@ export async function runTurn(ctx: Ctx, trigger: Trigger): Promise<void> {
   const deal = store.deal(dealId);
   if (!deal || deal.status !== 'active') { store.markProcessed(key); return; }
 
-  const negotiating = deal.stage === 'NEGOTIATING';
-  const modelId = model(negotiating ? 'negotiate' : 'orchestrator');
-  const system: Anthropic.Beta.BetaTextBlockParam[] = [
-    { type: 'text', text: stableSystem(cfg.owner, cfg.role) },
-    { type: 'text', text: dealSystem(dealId, deal.item, cfg.role, store.mandate(dealId)), cache_control: { type: 'ephemeral' } },
-  ];
+  const { modelId, system } = prefix(ctx);
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: stateMessage(ctx, trigger) }];
   store.event(dealId, 'TurnStarted', 'system', { trigger: trigger.id, reason: trigger.reason, model: modelId });
 
   let scheduled = false;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await anthropic().beta.messages.create({
-      model: modelId,
+      ...requestBase(modelId, system),
       max_tokens: 16000,
-      thinking: { type: 'adaptive' },
-      output_config: { effort: 'high' },
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-      cache_control: { type: 'ephemeral' },
-      system,
-      tools: TOOLS,
+      cache_control: autoCache(),
       messages,
     });
+    trackUsage('orchestrator', res.usage);
     // Append the full content (thinking blocks included) so history stays append-only.
     messages.push({ role: 'assistant', content: res.content });
     const text = res.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n');

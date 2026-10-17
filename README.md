@@ -111,11 +111,21 @@ Each Proxy also serves a JSON API on its port, for example `curl localhost:4001/
 ```bash
 pnpm test                               # trust-by-design unit tests (vitest)
 pnpm typecheck                          # TypeScript across the monorepo
+pnpm cache:check                        # verify prompt caching against the real API
 pnpm seed --deal PD-DEMO01              # seed a deal with a fixed ID (without --reset, existing DBs are kept)
 pnpm exec tsx apps/proxy/src/main.ts --env .env.agent1 --once   # run due jobs once, then exit (debugging)
 ```
 
 Stopping a Proxy and starting it again is safe. Deal state and scheduled jobs live in SQLite, and any job left running is put back in the queue on boot.
+
+## Prompt caching
+
+Every Claude API call is set up for prompt caching (`packages/llm/src/cache.ts`):
+
+- **Orchestrator (Opus):** tools, then the shared instructions (breakpoint), then the deal mandate (breakpoint). Both breakpoints use a **1-hour TTL**, because proxy turns are often more than 5 minutes apart. The growing conversation uses top-level automatic caching. Each proxy warms the cache on boot with a `max_tokens: 0` request, then re-warms every 55 minutes.
+- **Haiku checks** (leak check, inbound extraction, verifier): stable instructions go first in a cached `system` block and the unique content goes last. The verifier also caches its evidence block, which only grows. Prompts under the 512-token minimum aren't cached; the API skips them without an error.
+- **Check it:** `pnpm cache:check` sends the prefix twice; the second call should show `read=` greater than 0. Live hit rates per route are in `curl localhost:4001/api/health` under `promptCache`.
+- **TTL:** set `PROMPT_CACHE_TTL=5m` to use the 5-minute TTL instead.
 
 ## Repo layout
 

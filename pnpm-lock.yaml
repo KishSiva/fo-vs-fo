@@ -26,6 +26,9 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
+      pino:
+        specifier: ^10.4.0
+        version: 10.4.0
     devDependencies:
       '@types/node':
         specifier: ^20.14.0

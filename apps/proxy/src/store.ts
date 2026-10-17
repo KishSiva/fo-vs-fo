@@ -6,7 +6,7 @@ import {
   type Actor, type DB, type Mandate, type Stage, type DealStatus,
 } from '@proxydeal/core';
 
-export type JobType = 'turn' | 'fo_poll' | 'inbound_poll' | 'pay_execute';
+export type JobType = 'turn' | 'fo_poll' | 'inbound_poll' | 'pay_execute' | 'cache_warm';
 
 /** Canonical JSON (sorted keys) so equal payloads hash equally. */
 export function canonical(v: unknown): string {

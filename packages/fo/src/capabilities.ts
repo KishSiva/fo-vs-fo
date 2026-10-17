@@ -1,4 +1,4 @@
-import { anthropic, hasApiKey, model } from '@proxydeal/llm';
+import { anthropic, autoCache, hasApiKey, model } from '@proxydeal/llm';
 
 export const CAPABILITY_KEYS = ['call', 'email', 'text', 'pay', 'status', 'threads', 'thread_read'] as const;
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
@@ -56,6 +56,7 @@ async function classifyWithModel(tools: FoTool[], keys: CapabilityKey[]): Promis
   const res = await anthropic().messages.create({
     model: model('cheap'),
     max_tokens: 512,
+    cache_control: autoCache(),
     messages: [{
       role: 'user',
       content:
