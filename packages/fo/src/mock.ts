@@ -23,7 +23,7 @@ export class MockFoAdapter implements FoAdapter {
   }
 
   private deliver(channel: string, to: string, text: string) {
-    const sender = this.myAddresses[0] ?? this.myName;
+    const sender = this.address;
     // One thread per sender->recipient pair, like an sms conversation.
     const conv = `mock:${[sender, to].sort().join('|')}`;
     this.db.prepare('INSERT INTO bus (conv, sender, recipient, channel, text, at) VALUES (?,?,?,?,?,?)')
@@ -62,8 +62,9 @@ export class MockFoAdapter implements FoAdapter {
   }
 
   async inbound(since: string, _ignore: Set<string>): Promise<FoInbound[]> {
-    const ph = this.myAddresses.map(() => '?').join(',');
-    const rows = this.db.prepare(`SELECT * FROM bus WHERE recipient IN (${ph}) AND at >= ? ORDER BY id`).all(...this.myAddresses, since) as
+    const mine = this.myAddresses.length ? this.myAddresses : [this.address];
+    const ph = mine.map(() => '?').join(',');
+    const rows = this.db.prepare(`SELECT * FROM bus WHERE recipient IN (${ph}) AND at >= ? ORDER BY id`).all(...mine, since) as
       { conv: string; sender: string; channel: string; text: string; at: string }[];
     const byConv = new Map<string, FoInbound>();
     for (const r of rows) {
@@ -72,6 +73,16 @@ export class MockFoAdapter implements FoAdapter {
       byConv.set(r.conv, c);
     }
     return [...byConv.values()];
+  }
+
+  /** This Fo's own number on the mock network. */
+  get address() { return this.myAddresses[0] ?? this.myName; }
+
+  /** Both directions between this Fo and one address, oldest first (rehearsal UI). */
+  thread(other: string): { from: string; to: string; text: string; at: string }[] {
+    const me = this.address;
+    return this.db.prepare('SELECT sender AS "from", recipient AS "to", text, at FROM bus WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?) ORDER BY id')
+      .all(me, other, other, me) as { from: string; to: string; text: string; at: string }[];
   }
 
   /** Test helper: inject a message as if a human/business sent it. */

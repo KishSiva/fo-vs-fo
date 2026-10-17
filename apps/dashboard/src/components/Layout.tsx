@@ -97,6 +97,7 @@ export function Layout() {
           </NavLink>
           <nav className="flex items-center gap-1">
             <NavItem to="/">Deals</NavItem>
+            <NavItem to="/marketplace">Marketplace</NavItem>
             <NavItem to="/new">New deal</NavItem>
             <NavItem to="/approvals">
               Approvals

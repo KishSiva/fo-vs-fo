@@ -28,6 +28,12 @@ export interface Counterparty {
   foEmail?: string;
 }
 
+/**
+ * Marketplace mode: the other side is a real person texting by hand (not another Fo).
+ * Texts read like Facebook Marketplace messages, and the owner signs off by text before any deal is final.
+ */
+export const isMarketplace = (c: Pick<Counterparty, 'kind'>) => c.kind === 'human';
+
 export interface Mandate {
   /** Seller: lowest acceptable price. Buyer: highest acceptable price. PRIVATE. */
   floorOrCeiling: number;

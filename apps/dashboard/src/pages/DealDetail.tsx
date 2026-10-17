@@ -1,14 +1,15 @@
-import { CircleCheck, CircleX, Hand, Pause, Play, Zap } from "lucide-react";
+import { CircleCheck, CircleX, Hand, Pause, Play, RefreshCw, Zap } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { DealHeader } from "@/components/DealHeader";
 import { ExpectedObserved } from "@/components/EventItem";
 import { OffersChart } from "@/components/OffersChart";
+import { Rehearsal } from "@/components/Rehearsal";
 import { Timeline } from "@/components/Timeline";
 import { Empty, QueryState, StageBadge } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useCommitments, useDeal, useDealCommand, useEvents, useOffers, useSetChannel, useVerifications } from "@/lib/api";
+import { useCommitments, useDeal, useDealCommand, useEvents, useHealth, useOffers, useSetChannel, useVerifications } from "@/lib/api";
 import { useReplay } from "@/lib/replay";
 import type { ChannelPref, Command, Commitment, DealDetail, Stage } from "@/lib/types";
 import { cn, relative, time } from "@/lib/utils";
@@ -33,6 +34,7 @@ function Commands({ deal }: { deal: DealDetail }) {
         {cmd.isError && <span className="text-xs text-red-600">{cmd.error.message}</span>}
       </CardHeader>
       <CardContent className="flex flex-wrap gap-2">
+        {btn("check", RefreshCw, "Check Fo now", done)}
         {btn("nudge", Zap, "Nudge", done || deal.status === "paused")}
         {btn("pause", Pause, "Pause", done || deal.status === "paused")}
         {btn("resume", Play, "Resume", deal.status !== "paused")}
@@ -117,6 +119,7 @@ export function DealDetailPage() {
   const commitments = useCommitments(id);
   const verifications = useVerifications(id);
   const replay = useReplay(events.data ?? []);
+  const health = useHealth();
 
   // During replay, the right column + header follow the replay cursor.
   const upTo = <T extends { ts: string }>(xs: T[] = []) => (replay.cursorTs == null ? xs : xs.filter((x) => x.ts <= replay.cursorTs!));
@@ -141,6 +144,7 @@ export function DealDetailPage() {
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
             <Timeline allEvents={events.data ?? []} replay={replay} />
             <div className="flex flex-col gap-4">
+              <Rehearsal deal={deal.data} health={health.data} />
               <Card>
                 <CardHeader>
                   <CardTitle>Offers</CardTitle>

@@ -69,7 +69,7 @@ describe('both agents get the call transcript', () => {
   it('caller records it, sends a copy, and only uses the other side\'s words as their evidence', async () => {
     const store = storeWithDeal();
     const cfg = cfgFor('Ryan', 'Muhammed', 'http://localhost:4002');
-    const copy = outboundCopy(cfg, 'PD-TEST01', realCall);
+    const copy = outboundCopy(store, cfg, 'PD-TEST01', realCall);
     expect(copy.turns.map((t) => t.side)).toEqual(['caller', 'callee', 'caller']);
     await recordCall(store, cfg, copy, 'outbound');
     const kinds = store.db.select().from(events).all().map((e) => e.kind);
@@ -84,7 +84,7 @@ describe('both agents get the call transcript', () => {
   it('receiver records the copy as an inbound call and does not send it back', async () => {
     const store = storeWithDeal();
     const cfg = cfgFor('Muhammed', 'Ryan', 'http://localhost:4001');
-    const copy = outboundCopy(cfgFor('Ryan', 'Muhammed'), 'PD-TEST01', realCall);
+    const copy = outboundCopy(store, cfgFor('Ryan', 'Muhammed'), 'PD-TEST01', realCall);
     await recordCall(store, cfg, copy, 'inbound');
     const t = store.db.select().from(events).all().find((e) => e.kind === 'CallTranscript')!;
     expect((t.data as { direction: string }).direction).toBe('inbound');
@@ -97,7 +97,7 @@ describe('both agents get the call transcript', () => {
   it('is recorded once even if the copy arrives twice', async () => {
     const store = storeWithDeal();
     const cfg = cfgFor('Muhammed', 'Ryan');
-    const copy = outboundCopy(cfgFor('Ryan', 'Muhammed'), 'PD-TEST01', realCall);
+    const copy = outboundCopy(store, cfgFor('Ryan', 'Muhammed'), 'PD-TEST01', realCall);
     expect((await recordCall(store, cfg, copy, 'inbound')).recorded).toBe(true);
     expect((await recordCall(store, cfg, copy, 'inbound')).recorded).toBe(false);
     expect(store.db.select().from(events).all().filter((e) => e.kind === 'CallTranscript')).toHaveLength(1);

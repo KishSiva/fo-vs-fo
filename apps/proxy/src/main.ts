@@ -6,6 +6,7 @@ import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { Worker } from './worker.js';
 import { startApi } from './api.js';
+import { pollInbound } from './inbound.js';
 
 const cfg = loadConfig(process.argv);
 const log = pino({ name: cfg.proxyId, level: process.env.LOG_LEVEL ?? 'info' });
@@ -28,9 +29,8 @@ class LazyFo implements FoAdapter {
 let foConn: FoConnection | undefined;
 const capsFile = `config/fo-capabilities.${cfg.proxyId}.json`;
 
-const fo: FoAdapter = cfg.mockFo
-  ? new MockFoAdapter('data/mock-fo-bus.db', [cfg.ownerPhone, cfg.ownerEmail].filter(Boolean) as string[], cfg.owner)
-  : new LazyFo(async () => {
+const mockFo = cfg.mockFo ? new MockFoAdapter('data/mock-fo-bus.db', [cfg.ownerPhone, cfg.ownerEmail].filter(Boolean) as string[], cfg.owner) : undefined;
+const fo: FoAdapter = mockFo ?? new LazyFo(async () => {
       foConn = await connectFo({ url: cfg.foMcpUrl, role: cfg.proxyId, ownerName: cfg.owner, callbackPort: cfg.foOauthPort });
       let caps: CapabilityMap;
       if (existsSync(capsFile)) caps = JSON.parse(readFileSync(capsFile, 'utf8')).map;
@@ -48,14 +48,16 @@ const worker = new Worker(store, fo, cfg);
 const foSignedIn = () => cfg.mockFo || existsSync(`.fo-auth/${cfg.proxyId}.json`) && Boolean(JSON.parse(readFileSync(`.fo-auth/${cfg.proxyId}.json`, 'utf8')).tokens);
 
 if (process.argv.includes('--once')) {
+  // One pass of the loop: read new texts from Fo, then let Claude act on each (and anything else that's due).
   store.recoverJobs();
+  await pollInbound(store, fo, cfg);
   const n = await worker.tick();
   log.info({ jobs: n }, 'ran due jobs once');
   process.exit(0);
 }
 
 worker.start();
-await startApi(store, cfg, worker, foSignedIn);
+await startApi(store, cfg, worker, foSignedIn, mockFo);
 log.info({ port: cfg.port, mockFo: cfg.mockFo }, `${cfg.owner} proxy (${cfg.role}) up`);
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const)

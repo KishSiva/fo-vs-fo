@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import {
   actions, approvals, commitments, now, checkOffer, acceptable, nearLimit, canTransition, requiresVerification, STAGES, allowedChannels, canPlaceCall,
-  type Channel, type ChannelPref, type Mandate, type Stage,
+  isMarketplace, type Channel, type ChannelPref, type Counterparty, type Mandate, type Stage,
 } from '@proxydeal/core';
 import { guardOutbound } from '@proxydeal/llm';
 import { verify } from '@proxydeal/verify';
@@ -26,11 +26,25 @@ function load(ctx: Ctx) {
   return { deal, mandate: ctx.store.mandate(ctx.dealId), stage: deal.stage as Stage };
 }
 
+/** Who we negotiate with on this deal: the deal's own contact (pasted per deal) wins over the env default. */
+export function counterpartyOf(store: Store, cfg: Config, dealId: string): Counterparty {
+  const c = store.deal(dealId)?.counterparty;
+  return {
+    name: c?.name || cfg.counterparty.name,
+    kind: c?.kind ?? 'fo',
+    phone: c?.phone || cfg.counterparty.phone,
+    email: c?.email || cfg.counterparty.email,
+  };
+}
+
+const marketplace = (ctx: Ctx) => isMarketplace(counterpartyOf(ctx.store, ctx.cfg, ctx.dealId));
+export const normPhone = (s: string) => s.replace(/[\s().-]/g, '').toLowerCase();
+
 /** The owner picks text, call, or auto (proxy's choice of the two) per deal. */
 function checkChannel(ctx: Ctx, channel: Channel) {
   if (channel === 'call' && !canPlaceCall(ctx.cfg.role)) {
     ctx.store.event(ctx.dealId, 'GuardBlocked', 'system', { guard: 'channel', reason: 'The seller never places calls; the buyer calls the seller' });
-    throw new ToolError(`Sellers never place calls. ${ctx.cfg.counterparty.name} (the buyer) calls you, and your Fo negotiates and closes live on that call. Do not contact them by call; end your turn with schedule_followup.`);
+    throw new ToolError(`Sellers never place calls. ${counterpartyOf(ctx.store, ctx.cfg, ctx.dealId).name} (the buyer) calls you, and your Fo negotiates and closes live on that call. Do not contact them by call; end your turn with schedule_followup.`);
   }
   const pref = (ctx.store.deal(ctx.dealId)?.channelPref ?? 'auto') as ChannelPref;
   const ok = allowedChannels(pref);
@@ -42,12 +56,11 @@ function checkChannel(ctx: Ctx, channel: Channel) {
 
 /** Outbound targets are limited to known parties; anything else needs a human. */
 function resolveTarget(ctx: Ctx, channel: Channel, target?: string): string {
-  const cp = ctx.cfg.counterparty;
+  const cp = counterpartyOf(ctx.store, ctx.cfg, ctx.dealId);
   const known = [cp.phone, cp.email].filter(Boolean) as string[];
   const t = target ?? (channel === 'email' ? cp.email : cp.phone);
   if (!t) throw new ToolError(`No ${channel} address on file for the counterparty`);
-  const norm = (s: string) => s.replace(/[\s()-]/g, '').toLowerCase();
-  if (!known.some((k) => norm(k) === norm(t))) throw new ToolError(`Unknown target ${t}. Only the counterparty (${known.join(', ')}) may be contacted; escalate_to_human for anyone else.`);
+  if (!known.some((k) => normPhone(k) === normPhone(t))) throw new ToolError(`Unknown target ${t}. Only the counterparty (${known.join(', ')}) may be contacted; escalate_to_human for anyone else.`);
   if (channel === 'email' && !t.includes('@')) throw new ToolError('Email channel needs an email address');
   if (channel !== 'email' && t.includes('@')) throw new ToolError(`${channel} channel needs a phone number`);
   if (ctx.store.isDnc(t)) {
@@ -77,8 +90,9 @@ export const BRIEF_VERSION = 3;
 
 export function liveCallRules(ctx: Ctx, mandate: Mandate): string[] {
   const seller = ctx.cfg.role === 'seller';
-  const cp = ctx.cfg.counterparty.name;
+  const cp = counterpartyOf(ctx.store, ctx.cfg, ctx.dealId).name;
   const current = ctx.store.lastOffer(ctx.dealId, 'self')?.amount ?? mandate.openingOffer;
+  if (marketplace(ctx)) return marketplaceCallRules(ctx, mandate, cp, current, seller);
   return [
     `${ctx.cfg.owner} authorizes you to make a binding agreement for them on the call: you decide and agree, you do not pass offers along.`,
     `Settle deal ${ctx.dealId} on the call. Negotiate directly with ${cp} or their assistant until you agree on price and pickup, or it is clear no deal is possible. When you agree, say the price and pickup back to them and confirm it is a deal.`,
@@ -94,15 +108,32 @@ export function liveCallRules(ctx: Ctx, mandate: Mandate): string[] {
 }
 
 /**
+ * A live call with a real person about a Marketplace listing. Fo negotiates on the call, but the owner signs off
+ * on the final price, so Fo ends on a tentative agreement and the agent confirms by text after the owner's YES.
+ */
+function marketplaceCallRules(ctx: Ctx, mandate: Mandate, cp: string, current: number, seller: boolean): string[] {
+  const owner = ctx.cfg.owner;
+  return [
+    `You are calling ${cp} about their Facebook Marketplace listing, on behalf of ${owner}. Be friendly and natural, like a normal ${seller ? 'seller' : 'buyer'}.`,
+    `Ask a few questions first: why they're selling, their timeline, and whether they have anything else they need gone. Look for trades that help both sides (pickup timing, carrying it out, extra items).`,
+    `Your current price is $${current}. You may work toward any price ${seller ? 'at or above' : 'at or below'} $${mandate.floorOrCeiling}, moving at most $${mandate.maxConcessionPerRound} per counter, each with a reason. Never say, hint at, or round toward that limit.`,
+    `Do not finalize. When you reach terms that work, repeat the price, items and pickup time back to them and say: "Let me confirm with ${owner} and I'll text you right back to lock it in."`,
+    ...(mandate.dealbreakers.length ? [`Dealbreakers: ${mandate.dealbreakers.join('; ')}. If they insist on one, decline politely.`] : []),
+    'Never send, request or accept money on the call. Payment happens in person at pickup. Do not give addresses on the call.',
+    'Keep it under 10 minutes. Say you are an AI assistant and that the call may be recorded.',
+  ];
+}
+
+/**
  * Standing call-answering instruction for our own Fo. Fo answers its phone outside this chat, so it has
  * to read as a lasting instruction with full authority, or Fo just takes a message. The proxy calls this
  * itself (deal start, rule changes, the other side about to dial); the agent can add context via brief_fo.
  */
 export async function briefFo(ctx: Ctx, context?: string) {
   const { deal, mandate } = load(ctx);
-  const cp = ctx.cfg.counterparty;
+  const cp = counterpartyOf(ctx.store, ctx.cfg, ctx.dealId);
   const from = [cp.phone, cp.email].filter(Boolean).join(' / ');
-  const text = `STANDING INSTRUCTION for answering the phone, from ${ctx.cfg.owner}. Save it to your memory and apply it until deal ${ctx.dealId} is closed.\n` +
+  const text = isMarketplace(cp) ? marketplaceBrief(ctx, deal.item, cp.name, from, context) : `STANDING INSTRUCTION for answering the phone, from ${ctx.cfg.owner}. Save it to your memory and apply it until deal ${ctx.dealId} is closed.\n` +
     `Whenever you answer a call from ${cp.name}${from ? ` (${from})` : ''} or from anyone who mentions deal ${ctx.dealId}, you are not a general assistant taking a message: ` +
     `you are ${ctx.cfg.owner}'s negotiator for this ${ctx.cfg.role === 'seller' ? 'sale' : 'purchase'}. You counter and agree live on that call; you never check back with anyone first.\n` +
     `Item: ${deal.item}\n` +
@@ -118,12 +149,41 @@ export async function briefFo(ctx: Ctx, context?: string) {
 }
 
 /**
+ * Marketplace deals are text-only with a person, so Fo needs no price authority: it must stay quiet and let
+ * the negotiation agent write every reply, or Fo's own cautious replies undercut the negotiation.
+ */
+function marketplaceBrief(ctx: Ctx, item: string, cpName: string, from: string, context?: string) {
+  return `STANDING INSTRUCTION from ${ctx.cfg.owner}. Save it to your memory and apply it until this ${ctx.cfg.role === 'buyer' ? 'purchase' : 'sale'} is closed.\n` +
+    `My negotiation agent is handling a Facebook Marketplace ${ctx.cfg.role === 'buyer' ? 'purchase' : 'sale'} with ${cpName}${from ? ` (${from})` : ''}: ${item}\n` +
+    `- If ${cpName} texts you, do not reply yourself and do not negotiate. My agent reads the thread and replies through you within a minute.\n` +
+    `- When my agent asks you to send a text, send exactly the words it gives you.\n` +
+    `- Never send, request or accept money, and never use any payment tool for this. Payment, if any, happens in person.\n` +
+    `- Do not call ${cpName} unless my agent asks.\n` +
+    (context ? `Context from my agent: ${context}\n` : '') +
+    `Do not contact anyone now. Reply confirming you will follow this.`;
+}
+
+/** Text the owner's own phone (marketplace sign-off). Owner-only content, so no counterparty guard applies. */
+export async function textOwner(ctx: Ctx, body: string, purpose: 'approval' | 'question', approvalId?: number) {
+  const to = ctx.cfg.ownerNotifyPhone;
+  if (!to) return { texted: false, note: 'OWNER_NOTIFY_PHONE is not set; the owner decides on the dashboard.' };
+  const { foTaskId, status } = await ctx.fo.act({
+    channel: 'text', to, objective: purpose === 'approval' ? 'Ask my owner to approve' : 'Ask my owner a question',
+    script: body, constraints: ['This message goes to my own owner. Send it as written.'], mustDisclose: true, dealId: ctx.dealId,
+  });
+  ctx.store.markProcessed(`own:${foTaskId}`);
+  ctx.store.event(ctx.dealId, 'OwnerTexted', 'fo', { to, purpose, text: body, approvalId, foConversationId: foTaskId, foState: status.state });
+  return { texted: true };
+}
+
+/**
  * Before our Fo dials, the other side's Fo must already hold its standing instruction, or it answers
  * as a receptionist. The peer proxy briefs on demand when asked.
  */
 export async function requirePeerReady(ctx: Ctx) {
-  if (!ctx.cfg.peerUrl) return;
-  const cp = ctx.cfg.counterparty.name;
+  // A marketplace counterparty is a person on their own phone: there is no peer proxy to brief.
+  if (!ctx.cfg.peerUrl || marketplace(ctx)) return;
+  const cp = counterpartyOf(ctx.store, ctx.cfg, ctx.dealId).name;
   let ready = false;
   try {
     const r = await fetch(`${ctx.cfg.peerUrl}/api/deals/${encodeURIComponent(ctx.dealId)}/readiness`);
@@ -171,7 +231,10 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
       const theirs = ctx.store.lastOffer(ctx.dealId, 'counterparty');
       if (!theirs || theirs.amount !== amount) fail(`accept=true must use the counterparty's last offer amount (${theirs?.amount ?? 'none yet'})`);
       if (!acceptable(ctx.cfg.role, mandate, amount)) fail('That price is outside your mandate; you cannot accept it.');
-      if (nearLimit(ctx.cfg.role, mandate, amount) && !ctx.store.approvedWithHash(ctx.dealId, 2, hashPayload({ kind: 'accept', amount })))
+      const signedOff = ctx.store.approvedAccept(ctx.dealId, amount);
+      if (marketplace(ctx) && !signedOff)
+        fail(`${ctx.cfg.owner} signs off on every final price in this deal. request_approval({tier: 2, summary, payload: {"kind": "accept", "amount": ${amount}}}) first; the proxy texts them.`);
+      if (nearLimit(ctx.cfg.role, mandate, amount) && !signedOff)
         fail(`Accepting $${amount} is near your limit and needs a tier-2 approval first: request_approval({tier: 2, payload: {"kind": "accept", "amount": ${amount}}}).`);
     } else {
       const c = checkOffer(ctx.cfg.role, mandate, amount, ctx.store.lastOffer(ctx.dealId, 'self')?.amount);
@@ -202,6 +265,12 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     return dispatch(ctx, stage, channel, target, i.objective, script, constraints);
   },
 
+  async ask_owner(ctx, i) {
+    const res = await textOwner(ctx, String(i.question), 'question');
+    if (!res.texted) throw new ToolError(res.note ?? 'Could not text the owner');
+    return { ...res, note: 'Their reply will arrive as a new turn. Keep the deal moving; schedule_followup if you are waiting on them.' };
+  },
+
   async brief_fo(ctx, i) {
     return briefFo(ctx, String(i.instructions));
   },
@@ -216,7 +285,9 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     ctx.store.setStatus(ctx.dealId, 'paused');
     ctx.store.cancelPending(ctx.dealId, 'turn');
     ctx.store.event(ctx.dealId, 'ApprovalRequested', 'claude', { approvalId: row.id, tier, summary: i.summary, payload });
-    return { approvalId: row.id, status: 'pending', note: 'Deal is paused until the owner decides. End your turn now.' };
+    const sms = await textOwner(ctx, `${i.summary}\nReply YES to approve or NO to decline (or reply with what you'd like instead).`, 'approval', row.id)
+      .catch((e) => ({ texted: false, note: `Texting the owner failed (${e instanceof Error ? e.message : e}); they can decide on the dashboard.` }));
+    return { approvalId: row.id, status: 'pending', ownerTexted: sms.texted, note: 'Deal is paused until the owner decides. End your turn now.' };
   },
 
   async schedule_followup(ctx, i) {
@@ -243,6 +314,8 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     if (!canTransition(stage, to)) throw new ToolError(`Cannot go from ${stage} to ${to}`);
     if (requiresVerification(stage, to) && !ctx.store.lastVerification(ctx.dealId, stage)?.passed)
       throw new ToolError(`Leaving ${stage} needs a passed verify({stage: "${stage}"}) first.`);
+    if (to === 'AGREED' && marketplace(ctx) && !ctx.store.approvedOfKind(ctx.dealId, 2, 'accept'))
+      throw new ToolError(`${ctx.cfg.owner} has not signed off on the final terms. request_approval({tier: 2, summary, payload: {"kind": "accept", "amount": <price>}}) first.`);
     ctx.store.setStage(ctx.dealId, to);
     if (to === 'ABANDONED') ctx.store.setStatus(ctx.dealId, 'abandoned');
     if (to === 'CLOSED') ctx.store.setStatus(ctx.dealId, 'closed');

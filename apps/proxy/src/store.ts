@@ -66,6 +66,27 @@ export class Store {
   approvedWithHash(dealId: string, tier: number, hash: string) {
     return this.db.select().from(approvals).where(and(eq(approvals.dealId, dealId), eq(approvals.tier, tier), eq(approvals.status, 'approved'), eq(approvals.payloadHash, hash))).get();
   }
+  /** An approved sign-off for accepting exactly this price (extra payload detail like items or pickup is fine). */
+  approvedAccept(dealId: string, amount: number) {
+    return this.db.select().from(approvals).where(and(eq(approvals.dealId, dealId), eq(approvals.tier, 2), eq(approvals.status, 'approved'),
+      sql`json_extract(${approvals.payload}, '$.kind') = 'accept'`, sql`json_extract(${approvals.payload}, '$.amount') = ${amount}`)).get();
+  }
+  approvedOfKind(dealId: string, tier: number, kind: string) {
+    return this.db.select().from(approvals).where(and(eq(approvals.dealId, dealId), eq(approvals.tier, tier), eq(approvals.status, 'approved'),
+      sql`json_extract(${approvals.payload}, '$.kind') = ${kind}`)).get();
+  }
+  /** Owner's decision from the dashboard or a text reply. Returns undefined if it was already decided. */
+  decideApproval(id: number, decision: 'approved' | 'denied', by: string, note?: string) {
+    const a = this.db.select().from(approvals).where(eq(approvals.id, id)).get();
+    if (!a || a.status !== 'pending') return undefined;
+    const row = this.db.update(approvals).set({ status: decision, decidedAt: now(), decidedBy: by }).where(eq(approvals.id, id)).returning().get();
+    this.event(a.dealId, 'ApprovalDecided', 'human', { approvalId: id, decision, tier: a.tier, by, ...(note ? { note } : {}) });
+    this.setStatus(a.dealId, 'active');
+    if (decision === 'approved' && a.tier === 3) this.enqueue('pay_execute', { approvalId: id }, { dealId: a.dealId });
+    const said = note ? ` They said: "${note}"` : '';
+    this.enqueue('turn', { triggerId: `approval:${id}`, reason: `Owner ${decision} tier-${a.tier} approval #${id}: ${a.summary}.${said}` }, { dealId: a.dealId });
+    return row;
+  }
   isDnc(target: string) { return Boolean(this.db.select().from(dnc).where(eq(dnc.target, target)).get()); }
   addDnc(target: string, reason: string) { this.db.insert(dnc).values({ target, reason, ts: now() }).onConflictDoNothing().run(); }
 

@@ -15,7 +15,10 @@
     "seed": "tsx scripts/seed-deal.ts",
     "dashboard": "pnpm --filter @proxydeal/dashboard dev",
     "mock": "MOCK_FO=1 TIME_SCALE=0.01 WORKER_INTERVAL_MS=3000 concurrently -k -n a1,a2 \"pnpm proxy:1\" \"pnpm proxy:2\"",
-    "cache:check": "tsx scripts/cache-check.ts"
+    "cache:check": "tsx scripts/cache-check.ts",
+    "marketplace": "tsx apps/proxy/src/main.ts --env .env.marketplace",
+    "marketplace:mock": "MOCK_FO=1 tsx apps/proxy/src/main.ts --env .env.marketplace",
+    "marketplace:check": "tsx apps/proxy/src/main.ts --env .env.marketplace --once"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

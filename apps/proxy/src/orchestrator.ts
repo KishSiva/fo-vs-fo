@@ -1,13 +1,20 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import { allowedTools, STAGE_SPECS, type ChannelPref, type Role, type Stage } from '@proxydeal/core';
+import { allowedTools, isMarketplace, STAGE_SPECS, type ChannelPref, type Role, type Stage } from '@proxydeal/core';
 import { anthropic, model, stableSystem, dealSystem, TOOLS, prefixCache, autoCache, trackUsage } from '@proxydeal/llm';
-import { BRIEF_VERSION, HANDLERS, ToolError, type Ctx } from './handlers.js';
+import { BRIEF_VERSION, HANDLERS, ToolError, counterpartyOf, type Ctx } from './handlers.js';
 
 const MAX_ROUNDS = 6;
 
 export interface Trigger { id: string; reason: string }
 
-function channelLine(pref: ChannelPref, role: Role, counterparty: string): string {
+function channelLine(pref: ChannelPref, role: Role, counterparty: string, marketplace: boolean): string {
+  if (marketplace) {
+    if (pref === 'text') return `CHANNEL: text only. ${counterparty} is a person texting from their own phone; never call them.`;
+    const call = `Calls: your Fo phones ${counterparty} and negotiates live using your talking points, then ends on a tentative agreement ("let me confirm with the owner and text you back"). Read the transcript when it arrives, get owner sign-off, then confirm by text.`;
+    return pref === 'call'
+      ? `CHANNEL: the owner wants this deal done by phone call. ${call} Texts are fine only for short logistics after the call.`
+      : `CHANNEL: text or call, your choice. Start by text like a normal Marketplace ${role}; call when texting stalls or a live conversation would find a better package. ${call}`;
+  }
   if (role === 'seller') {
     return pref === 'text'
       ? `CHANNEL: text only. You never place calls: ${counterparty} (the buyer) calls you, and your Fo negotiates live when it answers.`
@@ -23,6 +30,7 @@ function stateMessage(ctx: Ctx, trigger: Trigger): string {
   const { store, dealId, cfg } = ctx;
   const deal = store.deal(dealId)!;
   const stage = deal.stage as Stage;
+  const cp = counterpartyOf(store, cfg, dealId);
   const offers = store.offers(dealId).map((o) => `${o.ts} ${o.from === 'self' ? 'YOU' : 'THEM'} $${o.amount} ${o.terms}`);
   const events = store.recentEvents(dealId, 30).map((e) => {
     const d = { ...(e.data as Record<string, unknown>) };
@@ -34,8 +42,9 @@ function stateMessage(ctx: Ctx, trigger: Trigger): string {
     `NOW: ${new Date().toISOString()}`,
     `STAGE: ${stage} (exit criteria: ${STAGE_SPECS[stage].exitCriteria})`,
     `TOOLS ALLOWED IN THIS STAGE: ${allowedTools(stage).join(', ')}`,
-    `COUNTERPARTY: ${cfg.counterparty.name} (${deal.counterparty.kind}) phone=${cfg.counterparty.phone ?? '-'} email=${cfg.counterparty.email ?? '-'}`,
-    channelLine(deal.channelPref as ChannelPref, cfg.role, cfg.counterparty.name),
+    `COUNTERPARTY: ${cp.name} (${cp.kind}) phone=${cp.phone ?? '-'} email=${cp.email ?? '-'}`,
+    channelLine(deal.channelPref as ChannelPref, cfg.role, cp.name, isMarketplace(cp)),
+    ...(isMarketplace(cp) ? [`OWNER SIGN-OFF: ${cfg.ownerNotifyPhone ? `request_approval and ask_owner text ${cfg.owner}` : `${cfg.owner} has no phone on file; request_approval waits for the dashboard and ask_owner is unavailable`}. Pending approval: ${store.pendingApproval(dealId) ? 'yes' : 'none'}.`] : []),
     store.briefedAtVersion(dealId, BRIEF_VERSION)
       ? 'FO BRIEFED: yes'
       : 'FO BRIEFED: in progress (the proxy briefs it automatically; use brief_fo only to add context such as questions to ask).',
@@ -54,10 +63,11 @@ function stateMessage(ctx: Ctx, trigger: Trigger): string {
 function prefix(ctx: Ctx) {
   const { store, dealId, cfg } = ctx;
   const deal = store.deal(dealId)!;
+  const cp = counterpartyOf(store, cfg, dealId);
   const modelId = model(deal.stage === 'NEGOTIATING' ? 'negotiate' : 'orchestrator');
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     { type: 'text', text: stableSystem(cfg.owner, cfg.role), cache_control: prefixCache() },
-    { type: 'text', text: dealSystem(dealId, deal.item, cfg.role, store.mandate(dealId)), cache_control: prefixCache() },
+    { type: 'text', text: dealSystem(dealId, deal.item, cfg.role, store.mandate(dealId), { marketplace: isMarketplace(cp), owner: cfg.owner, counterparty: cp.name }), cache_control: prefixCache() },
   ];
   return { modelId, system };
 }

@@ -9,7 +9,6 @@ import { shareCall, type CallCopy } from './calls.js';
 import { hashPayload, type Store } from './store.js';
 
 const MAX_FO_POLLS = 80; // ~20 minutes at 15s
-const INBOUND_EVERY_MS = 30_000;
 // Re-warm just under the 1-hour TTL so idle deals don't start their next turn cold.
 const REWARM_EVERY_MS = 55 * 60_000;
 
@@ -37,6 +36,19 @@ export class Worker {
   private ensureInboundPoller() {
     this.store.db.$client.prepare("UPDATE jobs SET status='cancelled' WHERE type='inbound_poll' AND status IN ('pending','running')").run();
     this.store.enqueue('inbound_poll', {});
+  }
+
+  /** One pending poll at a time: a "check now" request adds an immediate poll, which must not fork a second loop. */
+  private ensureNextPoll() {
+    const pending = this.store.db.$client.prepare("SELECT 1 FROM jobs WHERE type='inbound_poll' AND status='pending'").get();
+    if (!pending) this.store.enqueue('inbound_poll', {}, { inMs: this.cfg.inboundPollMs });
+  }
+
+  /** Check Fo for new texts right now (dashboard button, or the check script). */
+  checkNow() {
+    this.ensureNextPoll();
+    this.store.db.$client.prepare("UPDATE jobs SET run_at=? WHERE type='inbound_poll' AND status='pending'").run(new Date().toISOString());
+    this.kick();
   }
 
   /** Queue a briefing for our own Fo unless it already holds the current one (or one is queued). */
@@ -89,7 +101,7 @@ export class Worker {
         // Never let this job fail: a retry plus the reschedule below would leave two pollers.
         try { await pollInbound(this.store, this.fo, this.cfg); }
         catch (e) { this.store.log.error({ err: e }, 'inbound poll failed; retrying on the next poll'); }
-        finally { this.store.enqueue('inbound_poll', {}, { inMs: INBOUND_EVERY_MS }); }
+        finally { this.ensureNextPoll(); }
         return;
       case 'cache_warm':
         try {
@@ -118,8 +130,14 @@ export class Worker {
         this.store.event(dealId!, 'CallShared', 'system', { conversationId: p.call.conversationId, to: this.cfg.counterparty.name });
         return;
       case 'pay_execute': {
-        // Money moves only here, only for an approved tier-3 row whose hash matches the exact payload.
-        const a = this.store.db.select().from(approvals).where(eq(approvals.id, p.approvalId)).get();
+        // Money moves only here, only for an approved tier-3 row whose hash matches the exact payload,
+        // and only when the operator turned payments on (they are off for the demo).
+        if (!this.cfg.allowPayments) {
+          this.store.event(dealId!, 'GuardBlocked', 'system', { guard: 'spend_cap', reason: 'Payments are disabled (ALLOW_PAYMENTS is not 1); Fo never moves money' });
+          this.store.enqueue('turn', { triggerId: `paid:${p.approvalId}`, reason: 'Payment was NOT sent: payments are disabled for this demo. Payment happens in person at pickup; do not try again.' }, { dealId: dealId! });
+          return;
+        }
+        const a =this.store.db.select().from(approvals).where(eq(approvals.id, p.approvalId)).get();
         const payload = a?.payload as { to: string; amount: number; memo: string } | undefined;
         if (!a || a.tier !== 3 || a.status !== 'approved' || !payload || a.payloadHash !== hashPayload(payload)) {
           this.store.event(dealId!, 'GuardBlocked', 'system', { guard: 'spend_cap', reason: 'Payment refused: no matching approved tier-3 approval' });

@@ -100,6 +100,26 @@ In mock mode a message reaches the other agent only if `COUNTERPARTY_PHONE` in o
 
 3. Open http://localhost:5173 and use the selector in the top bar to switch between the two agents. It shows each proxy's `OWNER_NAME`.
 
+## 4. Marketplace mode: Claude drives, Fo acts, a real person on the other end
+
+One proxy negotiates a Facebook Marketplace deal with a real person (a teammate playing the seller), by text or phone call. Claude makes every decision, using a negotiation playbook drawn from *Never Split the Difference* and Harvard PON (it looks for deal space beyond price). Fo only sends Claude's exact words, or places the call. Before any price is final, Fo texts the owner's own phone, and the deal waits for a YES. **No money moves through Fo.** Payments are blocked in code unless `ALLOW_PAYMENTS=1`.
+
+```bash
+cp .env.marketplace.example .env.marketplace   # set ANTHROPIC_API_KEY, OWNER_PHONE (Fo's number), OWNER_NOTIFY_PHONE (owner's cell)
+pnpm marketplace:mock    # rehearse offline: no real texts
+pnpm dashboard           # http://localhost:5173 -> Marketplace
+```
+
+1. On the **Marketplace** page, paste the listing and your private goals and limits, then click **Read listing**. Check the mandate, enter the seller's name and phone, pick Text, Phone call or Agent picks, then click **Start negotiating**.
+2. **Rehearsal (mock):** the deal page shows two phones. Text Fo as the seller, and reply YES/NO as the owner.
+3. **Real run:** run `pnpm discover:fo --env .env.marketplace` once to sign in, then `pnpm marketplace`. The seller texts or answers Fo's number.
+
+**The loop.** While the proxy runs, it checks Fo for new texts every `INBOUND_POLL_MS` (10s in the template). Each new seller message starts a Claude turn, and Claude replies through Fo. **Check Fo now** on the deal page forces a check. `pnpm marketplace:check` runs a single pass (read new texts, let Claude act, exit), which you can run from a script or cron.
+
+**Owner sign-off.** `request_approval` texts the owner. A reply starting with YES approves, NO declines, and anything else declines and passes the owner's words to Claude as instructions. `ask_owner` sends a quick question mid-negotiation. The dashboard Approve button still works.
+
+**Calls.** Fo phones the seller and negotiates live, then ends on "let me confirm with the owner and text you back". Claude reads the transcript, gets the owner's YES, and confirms by text.
+
 ## Using the dashboard
 
 - **New deal:** describe a scenario in plain words (item, each side's opening and limit, dealbreakers, private facts). Claude turns it into both agents' private mandates; you review them, pick the channel, and create. Each proxy receives only its own side.

@@ -67,6 +67,18 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'ask_owner',
+    description: 'Text your owner a short question and keep going; their reply arrives as a new turn and is a trusted instruction. For a decision that must block the deal (accepting a price, final terms), use request_approval instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'One or two sentences, e.g. "Seller will add the sofa for $50 more. Want it?"' },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'schedule_followup',
     description: 'Schedule your next turn for this deal.',
     input_schema: {

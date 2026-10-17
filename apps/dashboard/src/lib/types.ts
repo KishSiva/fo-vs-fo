@@ -21,6 +21,12 @@ export interface Health {
   capabilities: Record<string, { toolName: string | null; viaAgent: boolean }>;
   worker: { lastBeat: string | null };
   foSignedIn: boolean;
+  mockFo?: boolean;
+  /** Owner's own cell for sign-off texts (marketplace mode). */
+  ownerPhone?: string | null;
+  /** This proxy's Fo number (the number the seller texts). */
+  foPhone?: string | null;
+  paymentsEnabled?: boolean;
 }
 
 export interface Deal {
@@ -119,7 +125,7 @@ export interface Scorecard {
   rows: ScoreRow[];
 }
 
-export type Command = "nudge" | "pause" | "resume" | "abandon";
+export type Command = "check" | "nudge" | "pause" | "resume" | "abandon";
 /** auto = the proxy picks text or call per message. */
 export type ChannelPref = "auto" | "text" | "call";
 
@@ -128,6 +134,19 @@ export interface FullMandate extends Mandate {
   floorOrCeiling: number;
   walkAwayAt: number;
   secrets: Record<string, string>;
+}
+
+export interface ParsedListing {
+  item: string;
+  summary: string;
+  askingPrice: number | null;
+  listerName: string | null;
+  mandate: FullMandate;
+  assumptions: string[];
+  warnings: string[];
+  role: Role;
+  owner: string;
+  ownerPhone: string | null;
 }
 
 export interface ParsedScenario {

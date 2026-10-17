@@ -3,6 +3,7 @@ import { actions } from '@proxydeal/core';
 import type { FoInbound } from '@proxydeal/fo';
 import type { Config } from './config.js';
 import { extract } from './inbound.js';
+import { counterpartyOf } from './handlers.js';
 import type { Store } from './store.js';
 
 /**
@@ -47,10 +48,10 @@ export const callSettled = (c: FoInbound, nowMs = Date.now()) =>
   c.turns.length > 0 && nowMs - Date.parse(c.turns[c.turns.length - 1].at) >= CALL_SETTLE_MS;
 
 /** Our Fo placed this call: in Fo's transcript "assistant" is our Fo and "user" is whoever answered. */
-export function outboundCopy(cfg: Config, dealId: string, c: FoInbound): CallCopy {
+export function outboundCopy(store: Store, cfg: Config, dealId: string, c: FoInbound): CallCopy {
   return {
     dealId, conversationId: c.conversationId, title: c.title, startedAt: c.startedAt,
-    caller: cfg.owner, callee: cfg.counterparty.name,
+    caller: cfg.owner, callee: counterpartyOf(store, cfg, dealId).name,
     turns: c.turns.map((t) => ({ side: t.role === 'assistant' ? 'caller' : 'callee', text: t.text, at: t.at })),
   };
 }
@@ -76,7 +77,7 @@ export async function recordCall(store: Store, cfg: Config, call: CallCopy, dire
   // The counterparty's own words are what verify() may rely on.
   const theirs = call.turns.filter((t) => t.side !== ours).map((t) => t.text).join('\n');
   if (theirs) {
-    store.event(call.dealId, 'InboundMessage', 'human', { channel: 'voice', from: cfg.counterparty.name, text: theirs, conversationId: call.conversationId });
+    store.event(call.dealId, 'InboundMessage', 'human', { channel: 'voice', from: counterpartyOf(store, cfg, call.dealId).name, text: theirs, conversationId: call.conversationId });
     const x = await extract(theirs);
     if (x.offerAmount && x.offerAmount > 0) {
       store.addOffer(call.dealId, 'counterparty', x.offerAmount, x.accepts ? 'accepts' : '', '');

@@ -18,6 +18,12 @@ export interface Config {
   timeScale: number;
   /** The other agent's proxy API. Fo only logs a call on the caller's side, so the caller sends the transcript here. */
   peerUrl?: string;
+  /** The owner's own cell (not their Fo's number). Marketplace deals text it for sign-off on final terms. */
+  ownerNotifyPhone?: string;
+  /** Off unless ALLOW_PAYMENTS=1: Fo never moves real money for a demo. */
+  allowPayments: boolean;
+  /** How often to check Fo for new texts (each new message starts a Claude turn). */
+  inboundPollMs: number;
 }
 
 export function loadConfig(argv: string[]): Config {
@@ -49,5 +55,8 @@ export function loadConfig(argv: string[]): Config {
     workerIntervalMs: Number(process.env.WORKER_INTERVAL_MS ?? 15_000),
     timeScale: Number(process.env.TIME_SCALE ?? 1),
     peerUrl: process.env.PEER_PROXY_URL?.replace(/\/$/, '') || undefined,
+    ownerNotifyPhone: process.env.OWNER_NOTIFY_PHONE || undefined,
+    allowPayments: process.env.ALLOW_PAYMENTS === '1',
+    inboundPollMs: Number(process.env.INBOUND_POLL_MS ?? 30_000),
   };
 }

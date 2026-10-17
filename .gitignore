@@ -10,5 +10,6 @@ __pycache__/
 *.db-journal
 dist/
 !.env.example
+!.env.marketplace.example
 tsconfig.tsbuildinfo
 data/

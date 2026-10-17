@@ -255,10 +255,33 @@ function render(e: Event): Rendered {
       return {
         icon: ok ? CircleCheck : CircleX,
         tone: ok ? "green" : "red",
-        title: <>Owner {ok ? "approved" : "denied"} request</>,
-        body: d.approvalId && <Muted>approval {String(d.approvalId).slice(0, 8)}</Muted>,
+        title: <>Owner {ok ? "approved" : "denied"} request{d.by && <Muted> · {d.by}</Muted>}</>,
+        body: (
+          <>
+            {d.note && <Quote>{d.note}</Quote>}
+            {d.approvalId && <Muted>approval {String(d.approvalId).slice(0, 8)}</Muted>}
+          </>
+        ),
       };
     }
+    case "OwnerTexted":
+      return {
+        icon: MessageSquare,
+        tone: "amber",
+        title: (
+          <>
+            Fo texted the owner <Muted>({d.purpose === "approval" ? "sign-off" : "question"})</Muted>
+          </>
+        ),
+        body: <Quote>{d.text}</Quote>,
+      };
+    case "OwnerReply":
+      return {
+        icon: Inbox,
+        tone: "green",
+        title: <>Owner replied by text</>,
+        body: <Quote>{d.text}</Quote>,
+      };
     case "Verification":
       return {
         icon: d.passed ? CircleCheck : CircleX,
