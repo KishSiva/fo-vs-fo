@@ -6,7 +6,7 @@
 import { parse } from 'dotenv';
 import { readFileSync, rmSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { openDb, deals, mandates, jobs, now, type Mandate } from '@proxydeal/core';
+import { openDb, deals, mandates, jobs, now, CHANNEL_PREFS, type ChannelPref, type Mandate } from '@proxydeal/core';
 
 const arg = (k: string) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : undefined; };
 const dealId = arg('--deal') ?? `PD-${randomBytes(3).toString('hex').toUpperCase()}`;
@@ -36,16 +36,19 @@ for (const file of ['.env.agent1', '.env.agent2']) {
   const role = env.PROXY_ROLE as 'seller' | 'buyer';
   if (reset && existsSync(env.DB_PATH)) for (const f of [env.DB_PATH, `${env.DB_PATH}-wal`, `${env.DB_PATH}-shm`]) rmSync(f, { force: true });
   const db = openDb(env.DB_PATH);
+  const channelPref = (env.CHANNEL_PREF || 'auto') as ChannelPref;
+  if (!CHANNEL_PREFS.includes(channelPref)) throw new Error(`${file}: CHANNEL_PREF must be ${CHANNEL_PREFS.join('|')}`);
   db.insert(deals).values({
-    id: dealId, role, item: ITEM, stage: 'NEGOTIATING', status: 'active', createdAt: now(),
+    id: dealId, role, item: ITEM, stage: 'NEGOTIATING', status: 'active', createdAt: now(), channelPref,
     counterparty: { name: env.COUNTERPARTY_NAME, kind: 'fo', phone: env.COUNTERPARTY_PHONE || undefined, email: env.COUNTERPARTY_EMAIL || undefined },
   }).run();
   db.insert(mandates).values({ dealId, data: MANDATES[role] }).run();
-  if (role === 'seller')
-    db.insert(jobs).values({ dealId, type: 'turn', runAt: now(), payload: {
-      triggerId: 'kickoff', reason: `Deal created. You are selling: ${ITEM}. ${env.COUNTERPARTY_NAME} replied to your listing and is interested. Open the negotiation with your opening offer by text.`,
-    } }).run();
-  console.log(`${env.OWNER_NAME} (${role}) -> ${env.DB_PATH}: seeded ${dealId}`);
+  const reason = role === 'seller'
+    ? `Deal created. You are selling: ${ITEM}. ${env.COUNTERPARTY_NAME} (the buyer) will call you; you never place calls. Your Fo is being briefed to negotiate and close live when it answers. Do not contact them now; schedule a follow-up and act on the call transcript when it arrives.`
+    : `Deal created. You are buying: ${ITEM}. Call ${env.COUNTERPARTY_NAME} (the seller) now with your opening offer and negotiate to a deal on that call. Only you place calls; the seller never calls you.`;
+  db.insert(jobs).values({ dealId, type: 'brief', runAt: now(), payload: {} }).run();
+  db.insert(jobs).values({ dealId, type: 'turn', runAt: new Date(Date.now() + 1000).toISOString(), payload: { triggerId: 'kickoff', reason } }).run();
+  console.log(`${env.OWNER_NAME} (${role}, channel ${channelPref}) -> ${env.DB_PATH}: seeded ${dealId}`);
   db.$client.close();
 }
 console.log(`\nDeal ${dealId} ready. Start both proxies; the seller opens.`);

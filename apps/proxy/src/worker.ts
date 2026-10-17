@@ -2,9 +2,10 @@ import { approvals, now } from '@proxydeal/core';
 import { eq } from 'drizzle-orm';
 import type { FoAdapter } from '@proxydeal/fo';
 import type { Config } from './config.js';
-import { completeAction } from './handlers.js';
+import { BRIEF_VERSION, briefFo, completeAction } from './handlers.js';
 import { runTurn, prewarm } from './orchestrator.js';
 import { pollInbound } from './inbound.js';
+import { shareCall, type CallCopy } from './calls.js';
 import { hashPayload, type Store } from './store.js';
 
 const MAX_FO_POLLS = 80; // ~20 minutes at 15s
@@ -24,6 +25,7 @@ export class Worker {
     if (n) this.store.log.warn({ recovered: n }, 'requeued jobs left running by a previous process');
     this.ensureInboundPoller();
     this.ensureCacheWarmer();
+    for (const d of this.store.activeDeals()) this.ensureBriefed(d.id);
     this.timer = setInterval(() => void this.tick(), this.cfg.workerIntervalMs);
     void this.tick();
   }
@@ -31,9 +33,19 @@ export class Worker {
   /** Run due jobs now instead of waiting for the next interval. */
   kick() { setImmediate(() => void this.tick()); }
 
+  /** Exactly one inbound poller: it reschedules itself, so any extra copy would poll forever too. */
   private ensureInboundPoller() {
-    const exists = this.store.db.$client.prepare("SELECT 1 FROM jobs WHERE type='inbound_poll' AND status IN ('pending','running')").get();
-    if (!exists) this.store.enqueue('inbound_poll', {});
+    this.store.db.$client.prepare("UPDATE jobs SET status='cancelled' WHERE type='inbound_poll' AND status IN ('pending','running')").run();
+    this.store.enqueue('inbound_poll', {});
+  }
+
+  /** Queue a briefing for our own Fo unless it already holds the current one (or one is queued). */
+  ensureBriefed(dealId: string): boolean {
+    if (this.store.briefedAtVersion(dealId, BRIEF_VERSION)) return true;
+    const queued = this.store.db.$client.prepare("SELECT 1 FROM jobs WHERE type='brief' AND deal_id=? AND status IN ('pending','running')").get(dealId);
+    if (!queued) this.store.enqueue('brief', {}, { dealId });
+    this.kick();
+    return false;
   }
 
   private ensureCacheWarmer() {
@@ -74,7 +86,9 @@ export class Worker {
         await runTurn({ store: this.store, fo: this.fo, cfg: this.cfg, dealId: dealId!, }, { id: p.triggerId, reason: p.reason });
         return;
       case 'inbound_poll':
+        // Never let this job fail: a retry plus the reschedule below would leave two pollers.
         try { await pollInbound(this.store, this.fo, this.cfg); }
+        catch (e) { this.store.log.error({ err: e }, 'inbound poll failed; retrying on the next poll'); }
         finally { this.store.enqueue('inbound_poll', {}, { inMs: INBOUND_EVERY_MS }); }
         return;
       case 'cache_warm':
@@ -95,6 +109,14 @@ export class Worker {
         completeAction(this.store, dealId!, p.actionId, p.channel ?? 'fo', st, { triggerTurn: true });
         return;
       }
+      case 'brief':
+        if (!this.store.briefedAtVersion(dealId!, BRIEF_VERSION))
+          await briefFo({ store: this.store, fo: this.fo, cfg: this.cfg, dealId: dealId! });
+        return;
+      case 'share_call':
+        await shareCall(this.cfg, p.call as CallCopy);
+        this.store.event(dealId!, 'CallShared', 'system', { conversationId: p.call.conversationId, to: this.cfg.counterparty.name });
+        return;
       case 'pay_execute': {
         // Money moves only here, only for an approved tier-3 row whose hash matches the exact payload.
         const a = this.store.db.select().from(approvals).where(eq(approvals.id, p.approvalId)).get();

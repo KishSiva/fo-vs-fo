@@ -32,7 +32,7 @@ export const TOOLS: Tool[] = [
         channel,
         target: { type: 'string', description: 'Phone number or email address' },
         objective: { type: 'string' },
-        script: { type: 'string', description: 'Exact message, or for calls the opening line plus talking points' },
+        script: { type: 'string', description: 'Exact message, or for calls the opening line plus talking points. Calls are settled live; never write points that defer ("I\'ll get back to you").' },
         constraints: { type: 'array', items: { type: 'string' } },
         stage: { type: 'string' },
       },
@@ -42,14 +42,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'brief_fo',
-    description: 'Privately brief your own Fo before it might take a live call about this deal. Give it bounded authority: the server replaces your limit with a call limit computed from the mandate, so Fo never learns your true limit.',
+    description: 'Add context to your own Fo\'s standing call-answering instruction (the proxy already briefs it with the item, your price authority and the live-call rules). Use it for things like questions to ask or points to stress.',
     input_schema: {
       type: 'object',
       properties: {
         instructions: { type: 'string' },
-        callAuthority: { type: 'number', description: 'Price you would like Fo to be allowed to agree to on the call' },
       },
-      required: ['instructions', 'callAuthority'],
+      required: ['instructions'],
       additionalProperties: false,
     },
   },

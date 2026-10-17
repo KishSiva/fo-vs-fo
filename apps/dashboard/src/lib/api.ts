@@ -3,6 +3,7 @@ import { useRef } from "react";
 import { useProxy } from "./proxy";
 import type {
   Approval,
+  ChannelPref,
   Command,
   Commitment,
   Deal,
@@ -18,7 +19,7 @@ export const POLL_MS = 3000;
 
 export class OfflineError extends Error {}
 
-async function request<T>(base: string, path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(base + path, {
@@ -103,6 +104,19 @@ export function useDealCommand(dealId: string) {
       request<{ ok: true }>(proxy.url, `/api/deals/${dealId}/command`, {
         method: "POST",
         body: JSON.stringify({ type }),
+      }),
+    onSettled: () => qc.invalidateQueries({ queryKey: [proxy.url] }),
+  });
+}
+
+export function useSetChannel(dealId: string) {
+  const { proxy } = useProxy();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (channel: ChannelPref) =>
+      request<{ ok: true }>(proxy.url, `/api/deals/${dealId}/command`, {
+        method: "POST",
+        body: JSON.stringify({ type: "channel", channel }),
       }),
     onSettled: () => qc.invalidateQueries({ queryKey: [proxy.url] }),
   });

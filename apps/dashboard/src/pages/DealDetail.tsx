@@ -8,9 +8,9 @@ import { Empty, QueryState, StageBadge } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useCommitments, useDeal, useDealCommand, useEvents, useOffers, useVerifications } from "@/lib/api";
+import { useCommitments, useDeal, useDealCommand, useEvents, useOffers, useSetChannel, useVerifications } from "@/lib/api";
 import { useReplay } from "@/lib/replay";
-import type { Command, Commitment, DealDetail, Stage } from "@/lib/types";
+import type { ChannelPref, Command, Commitment, DealDetail, Stage } from "@/lib/types";
 import { cn, relative, time } from "@/lib/utils";
 
 function Commands({ deal }: { deal: DealDetail }) {
@@ -38,7 +38,36 @@ function Commands({ deal }: { deal: DealDetail }) {
         {btn("resume", Play, "Resume", deal.status !== "paused")}
         {btn("abandon", Hand, "Abandon", done, "destructive")}
       </CardContent>
+      <ChannelPicker deal={deal} disabled={done} />
     </Card>
+  );
+}
+
+const CHANNELS: { value: ChannelPref; label: string; title: string }[] = [
+  { value: "auto", label: "Let them choose", title: "The proxy picks text or a call for each contact" },
+  { value: "text", label: "Text only", title: "Every outbound contact is a text" },
+  { value: "call", label: "Call only", title: "Every outbound contact is a phone call" },
+];
+
+function ChannelPicker({ deal, disabled }: { deal: DealDetail; disabled: boolean }) {
+  const set = useSetChannel(deal.id);
+  return (
+    <CardContent className="flex flex-wrap items-center gap-2 border-t pt-3">
+      <span className="text-xs text-slate-500">Channel</span>
+      {CHANNELS.map((c) => (
+        <Button
+          key={c.value}
+          size="sm"
+          title={c.title}
+          variant={deal.channelPref === c.value ? "default" : "outline"}
+          disabled={disabled || set.isPending}
+          onClick={() => set.mutate(c.value)}
+        >
+          {c.label}
+        </Button>
+      ))}
+      {set.isError && <span className="text-xs text-red-600">{set.error.message}</span>}
+    </CardContent>
   );
 }
 

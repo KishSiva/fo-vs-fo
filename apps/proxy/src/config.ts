@@ -16,6 +16,8 @@ export interface Config {
   workerIntervalMs: number;
   /** Multiplies follow-up delays (0.05 = 20x faster for demos). */
   timeScale: number;
+  /** The other agent's proxy API. Fo only logs a call on the caller's side, so the caller sends the transcript here. */
+  peerUrl?: string;
 }
 
 export function loadConfig(argv: string[]): Config {
@@ -46,5 +48,6 @@ export function loadConfig(argv: string[]): Config {
     mockFo: argv.includes('--mock') || process.env.MOCK_FO === '1',
     workerIntervalMs: Number(process.env.WORKER_INTERVAL_MS ?? 15_000),
     timeScale: Number(process.env.TIME_SCALE ?? 1),
+    peerUrl: process.env.PEER_PROXY_URL?.replace(/\/$/, '') || undefined,
   };
 }

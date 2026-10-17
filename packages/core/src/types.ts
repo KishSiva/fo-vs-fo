@@ -6,6 +6,17 @@ export type Stage = (typeof STAGES)[number];
 
 export type Role = 'seller' | 'buyer';
 export type Channel = 'call' | 'email' | 'text';
+/** Owner's channel choice for a deal. auto = the proxy picks text or call each time. */
+export type ChannelPref = 'auto' | 'text' | 'call';
+export const CHANNEL_PREFS: readonly ChannelPref[] = ['auto', 'text', 'call'];
+
+/** Only the buyer dials. The seller's Fo answers the buyer's call and negotiates there. */
+export const canPlaceCall = (role: Role) => role === 'buyer';
+
+/** Channels the proxy may use under a preference. Email is off: the owner wants Fo-to-Fo text or calls. */
+export function allowedChannels(pref: ChannelPref): Channel[] {
+  return pref === 'auto' ? ['text', 'call'] : [pref];
+}
 export type Actor = 'claude' | 'fo' | 'human' | 'system';
 export type DealStatus = 'active' | 'paused' | 'closed' | 'abandoned';
 

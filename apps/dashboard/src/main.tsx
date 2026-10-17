@@ -7,6 +7,7 @@ import { ProxyProvider } from "@/lib/proxy";
 import { ApprovalsPage } from "@/pages/Approvals";
 import { DealDetailPage } from "@/pages/DealDetail";
 import { DealListPage } from "@/pages/DealList";
+import { NewDealPage } from "@/pages/NewDeal";
 import { ScorecardPage } from "@/pages/Scorecard";
 import "./index.css";
 
@@ -20,6 +21,7 @@ createRoot(document.getElementById("root")!).render(
           <Routes>
             <Route element={<Layout />}>
               <Route index element={<DealListPage />} />
+              <Route path="new" element={<NewDealPage />} />
               <Route path="deals/:id" element={<DealDetailPage />} />
               <Route path="approvals" element={<ApprovalsPage />} />
               <Route path="scorecard" element={<ScorecardPage />} />

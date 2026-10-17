@@ -10,7 +10,8 @@ export interface StageSpec {
   timeoutMin: number;
 }
 
-const ALWAYS = ['schedule_followup', 'verify', 'record_commitment', 'resolve_commitment', 'escalate_to_human', 'request_approval', 'transition'];
+// brief_fo only instructs our own Fo (no outbound contact), so it is safe in every open stage.
+const ALWAYS = ['schedule_followup', 'verify', 'record_commitment', 'resolve_commitment', 'escalate_to_human', 'request_approval', 'transition', 'brief_fo'];
 
 export const STAGE_SPECS: Record<Stage, StageSpec> = {
   NEGOTIATING: { next: ['AGREED', 'ABANDONED'], tools: ['propose', 'fo_act'], exitCriteria: 'Counterparty explicitly accepted a specific price in their own message', timeoutMin: 120 },

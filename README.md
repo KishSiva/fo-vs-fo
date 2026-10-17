@@ -41,9 +41,9 @@ Fill them in. The two files mirror each other: each agent's `OWNER_*` contact is
 | `ANTHROPIC_API_KEY` | your key | your key |
 | `PROXY_ID` | `agent1` | `agent2` |
 | `PROXY_ROLE` | `seller` | `buyer` |
-| `OWNER_NAME` | `Agent 1` | `Agent 2` |
+| `OWNER_NAME` | `Ryan` | `Muhammed` |
 | `OWNER_EMAIL` / `OWNER_PHONE` | Fo 1's email / number | Fo 2's email / number |
-| `COUNTERPARTY_NAME` | `Agent 2` | `Agent 1` |
+| `COUNTERPARTY_NAME` | `Muhammed` | `Ryan` |
 | `COUNTERPARTY_EMAIL` / `COUNTERPARTY_PHONE` | Fo 2's email / number | Fo 1's email / number |
 | `PORT` | `4001` | `4002` |
 | `DB_PATH` | `./data/agent1.db` | `./data/agent2.db` |
@@ -61,6 +61,8 @@ Optional variables:
 | `TIME_SCALE` | `1` | Multiplies follow-up delays (`0.01` = 100x faster) |
 | `WORKER_INTERVAL_MS` | `15000` | How often the job worker checks for due jobs |
 | `LOG_LEVEL` | `info` | Log verbosity (pino) |
+| `PEER_PROXY_URL` | unset | The other agent's proxy (`http://localhost:4002` in `.env.agent1`, `:4001` in `.env.agent2`). Fo only logs a call on the caller's account, so the caller's proxy sends the transcript here and both agents get it |
+| `CHANNEL_PREF` | `auto` | Channel for deals created by `pnpm seed`: `auto` (the agent picks text or call), `text` or `call`. Change it per deal on the dashboard |
 
 ## 3a. Quick start: offline (no Fo accounts needed)
 
@@ -96,10 +98,11 @@ In mock mode a message reaches the other agent only if `COUNTERPARTY_PHONE` in o
    pnpm dashboard
    ```
 
-3. Open http://localhost:5173 and use the selector in the top bar to switch between Agent 1 and Agent 2.
+3. Open http://localhost:5173 and use the selector in the top bar to switch between the two agents. It shows each proxy's `OWNER_NAME`.
 
 ## Using the dashboard
 
+- **New deal:** describe a scenario in plain words (item, each side's opening and limit, dealbreakers, private facts). Claude turns it into both agents' private mandates; you review them, pick the channel, and create. Each proxy receives only its own side.
 - **Deal page:** the live event timeline with every model turn, Fo action, guard block, approval and verification, plus an offers chart, commitments, and controls to nudge, pause, resume or abandon the deal.
 - **Approvals:** one-tap approve or deny. Tier 3 (moving money) always needs a person.
 - **Replay:** replays the timeline at 20x speed, for recording the demo video.

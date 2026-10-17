@@ -32,6 +32,7 @@ export interface FoInbound {
   conversationId: string;
   channel: string;
   title: string;
+  startedAt: string;
   turns: FoTurn[];
 }
 
@@ -49,15 +50,18 @@ export interface FoAdapter {
 /** Turns a structured action into the plain-language request Fo's ask_fo expects. */
 export function renderRequest(req: FoActRequest): string {
   const tag = `[ProxyDeal ${req.dealId}]`;
-  const rules = [
-    ...req.constraints,
-    'Do not share any information beyond what is written here.',
-    'Do not make commitments, payments or purchases beyond what is written here.',
-  ];
+  // On calls the constraints grant price authority; the generic text rules would make Fo refuse to negotiate.
+  const rules = req.channel === 'call'
+    ? [...req.constraints, 'Share only the item facts and terms in these instructions. Make no payments or purchases.']
+    : [
+      ...req.constraints,
+      'Do not share any information beyond what is written here.',
+      'Do not make commitments, payments or purchases beyond what is written here.',
+    ];
   const how = {
     text: `Send a text message to ${req.to}. Send exactly the message between the markers, verbatim, with no additions:`,
     email: `Send an email to ${req.to} with subject "${tag} ${req.objective}". Use exactly the body between the markers, verbatim:`,
-    call: `Place a phone call to ${req.to}. Keep it under ${req.maxDurationMin ?? 10} minutes. Open with the first paragraph between the markers word for word, then pursue the objective using the talking points:`,
+    call: `Place a phone call to ${req.to}. Keep it under ${req.maxDurationMin ?? 10} minutes. Open with the first paragraph between the markers word for word, then negotiate live to a conclusion using the talking points and the rules below:`,
   }[req.channel];
   const report = req.channel === 'call'
     ? 'When the call ends, reply with a short summary and finish with a JSON block: {"outcome": "...", "agreedPrice": number|null, "commitments": ["..."]}.'
@@ -75,10 +79,12 @@ export function renderRequest(req: FoActRequest): string {
 
 interface AskReply { response?: string; status?: string; progress?: string; conversationId?: string; error?: string }
 
+/** Fo puts its data in structuredContent; the text content is a human-readable rendering. */
 function parseToolText(raw: unknown): unknown {
-  const r = raw as { content?: unknown; isError?: boolean };
+  const r = raw as { content?: unknown; structuredContent?: unknown; isError?: boolean };
   const text = ((r.content ?? []) as { type: string; text?: string }[]).map((c) => c.text ?? '').join('');
   if (r.isError) throw new Error(`Fo tool error: ${text.slice(0, 300)}`);
+  if (r.structuredContent && typeof r.structuredContent === 'object') return { response: text, ...r.structuredContent };
   try { return JSON.parse(text); } catch { return { response: text }; }
 }
 
@@ -128,7 +134,7 @@ export class McpFoAdapter implements FoAdapter {
   }
 
   async brief(dealId: string, message: string) {
-    const text = `[ProxyDeal ${dealId}] Private briefing from my negotiation agent. Do not contact anyone now; just confirm you understand.\n${message}`;
+    const text = `[ProxyDeal ${dealId}] Private briefing from my negotiation agent.\n${message}`;
     const r = parseToolText(await this.fo.callTool(this.tool('call'), { message: text, newConversation: true })) as AskReply;
     if (!r.conversationId) throw new Error('Fo did not return a conversation id');
     return { foTaskId: r.conversationId, status: toStatus(r) };
@@ -148,7 +154,7 @@ export class McpFoAdapter implements FoAdapter {
     );
     const out: FoInbound[] = [];
     for (const c of fresh) {
-      out.push({ conversationId: c.conversationId, channel: c.channel, title: c.title, turns: await this.transcript(c.conversationId) });
+      out.push({ conversationId: c.conversationId, channel: c.channel, title: c.title, startedAt: c.startedAt, turns: await this.transcript(c.conversationId) });
     }
     return out;
   }

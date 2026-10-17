@@ -3,10 +3,10 @@ import { and, asc, desc, eq, lte, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import {
   approvals, commitments, deals, events, jobs, mandates, offers, processed, verifications, dnc, now,
-  type Actor, type DB, type Mandate, type Stage, type DealStatus,
+  type Actor, type ChannelPref, type DB, type Mandate, type Stage, type DealStatus,
 } from '@proxydeal/core';
 
-export type JobType = 'turn' | 'fo_poll' | 'inbound_poll' | 'pay_execute' | 'cache_warm';
+export type JobType = 'turn' | 'fo_poll' | 'inbound_poll' | 'pay_execute' | 'cache_warm' | 'share_call' | 'brief';
 
 /** Canonical JSON (sorted keys) so equal payloads hash equally. */
 export function canonical(v: unknown): string {
@@ -36,6 +36,7 @@ export class Store {
   }
   setStage(id: string, stage: Stage) { this.db.update(deals).set({ stage }).where(eq(deals.id, id)).run(); }
   setStatus(id: string, status: DealStatus) { this.db.update(deals).set({ status }).where(eq(deals.id, id)).run(); }
+  setChannelPref(id: string, channelPref: ChannelPref) { this.db.update(deals).set({ channelPref }).where(eq(deals.id, id)).run(); }
 
   offers(id: string) { return this.db.select().from(offers).where(eq(offers.dealId, id)).orderBy(asc(offers.id)).all(); }
   lastOffer(id: string, from: 'self' | 'counterparty') {
@@ -50,6 +51,11 @@ export class Store {
   }
   recentEvents(id: string, n: number) {
     return this.db.select().from(events).where(eq(events.dealId, id)).orderBy(desc(events.id)).limit(n).all().reverse();
+  }
+  /** Older briefings told Fo to defer or take messages, so only ones at the current version count. */
+  briefedAtVersion(id: string, version: number) {
+    return Boolean(this.db.select({ id: events.id }).from(events)
+      .where(and(eq(events.dealId, id), eq(events.kind, 'FoBriefed'), sql`json_extract(${events.data}, '$.briefVersion') >= ${version}`)).limit(1).get());
   }
   lastVerification(dealId: string, stage: string) {
     return this.db.select().from(verifications).where(and(eq(verifications.dealId, dealId), eq(verifications.stage, stage))).orderBy(desc(verifications.id)).get();

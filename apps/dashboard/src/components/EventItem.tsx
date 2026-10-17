@@ -142,6 +142,38 @@ function render(e: Event): Rendered {
         ),
         body: d.summary && <Clamp text={String(d.summary)} />,
       };
+    case "CallTranscript": {
+      const turns = (d.turns ?? []) as { side: "caller" | "callee"; text: string; at: string }[];
+      return {
+        icon: Phone,
+        tone: "blue",
+        title: (
+          <>
+            Call <span className="font-semibold">{d.caller}</span>'s Fo <ArrowRight className="inline h-3 w-3" />{" "}
+            <span className="font-semibold">{d.callee}</span>'s Fo <Muted>· {turns.length} lines</Muted>
+          </>
+        ),
+        body: (
+          <div className="mt-1 space-y-1 rounded-md bg-slate-50 p-2 text-xs">
+            {turns.map((t, i) => (
+              <div key={i}>
+                <span className="font-semibold text-slate-600">{t.side === "caller" ? d.caller : d.callee}:</span>{" "}
+                <span className="text-slate-800">{t.text}</span>
+              </div>
+            ))}
+          </div>
+        ),
+      };
+    }
+    case "CallShared":
+      return {
+        icon: Phone,
+        title: (
+          <>
+            Sent call transcript <Muted>to</Muted> <span className="font-semibold">{d.to}</span>
+          </>
+        ),
+      };
     case "InboundMessage":
       return {
         icon: Inbox,

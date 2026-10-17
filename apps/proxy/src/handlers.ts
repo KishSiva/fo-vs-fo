@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import {
-  actions, approvals, commitments, now, checkOffer, acceptable, nearLimit, canTransition, requiresVerification, STAGES,
-  type Channel, type Mandate, type Stage,
+  actions, approvals, commitments, now, checkOffer, acceptable, nearLimit, canTransition, requiresVerification, STAGES, allowedChannels, canPlaceCall,
+  type Channel, type ChannelPref, type Mandate, type Stage,
 } from '@proxydeal/core';
 import { guardOutbound } from '@proxydeal/llm';
 import { verify } from '@proxydeal/verify';
@@ -24,6 +24,20 @@ function load(ctx: Ctx) {
   const deal = ctx.store.deal(ctx.dealId);
   if (!deal) throw new ToolError('Deal not found');
   return { deal, mandate: ctx.store.mandate(ctx.dealId), stage: deal.stage as Stage };
+}
+
+/** The owner picks text, call, or auto (proxy's choice of the two) per deal. */
+function checkChannel(ctx: Ctx, channel: Channel) {
+  if (channel === 'call' && !canPlaceCall(ctx.cfg.role)) {
+    ctx.store.event(ctx.dealId, 'GuardBlocked', 'system', { guard: 'channel', reason: 'The seller never places calls; the buyer calls the seller' });
+    throw new ToolError(`Sellers never place calls. ${ctx.cfg.counterparty.name} (the buyer) calls you, and your Fo negotiates and closes live on that call. Do not contact them by call; end your turn with schedule_followup.`);
+  }
+  const pref = (ctx.store.deal(ctx.dealId)?.channelPref ?? 'auto') as ChannelPref;
+  const ok = allowedChannels(pref);
+  if (!ok.includes(channel)) {
+    ctx.store.event(ctx.dealId, 'GuardBlocked', 'system', { guard: 'channel', reason: `${channel} not allowed; owner set channel to ${pref}` });
+    throw new ToolError(`The owner set this deal's channel to "${pref}". Use ${ok.join(' or ')}.`);
+  }
 }
 
 /** Outbound targets are limited to known parties; anything else needs a human. */
@@ -52,6 +66,73 @@ async function guarded(ctx: Ctx, mandate: Mandate, channel: Channel, script: str
     throw new ToolError(g.reason ?? 'Blocked by guard');
   }
   return g.script;
+}
+
+/**
+ * Rules for any call about this deal, placed or answered by our Fo. A call settles the deal live:
+ * Fo may agree anywhere within the owner's true limit and never defers to a later call.
+ */
+/** Bump when the briefing changes in a way already-briefed Fos need to hear again. */
+export const BRIEF_VERSION = 3;
+
+export function liveCallRules(ctx: Ctx, mandate: Mandate): string[] {
+  const seller = ctx.cfg.role === 'seller';
+  const cp = ctx.cfg.counterparty.name;
+  const current = ctx.store.lastOffer(ctx.dealId, 'self')?.amount ?? mandate.openingOffer;
+  return [
+    `${ctx.cfg.owner} authorizes you to make a binding agreement for them on the call: you decide and agree, you do not pass offers along.`,
+    `Settle deal ${ctx.dealId} on the call. Negotiate directly with ${cp} or their assistant until you agree on price and pickup, or it is clear no deal is possible. When you agree, say the price and pickup back to them and confirm it is a deal.`,
+    `Do not say you will pass the offer along, get back to them, check with ${ctx.cfg.owner}, call back later, or schedule another call. Do not put them on hold.`,
+    `Your current price is $${current}. You may agree to any price ${seller ? 'at or above' : 'at or below'} $${mandate.floorOrCeiling}. Never say, hint at, or round toward that number.`,
+    `Negotiate actively: every time they name a price, answer with a counter-offer that moves ${seller ? 'down' : 'up'} toward them by at most $${mandate.maxConcessionPerRound}, with a reason (condition, comparables, quick pickup, cash). Make as many counters as it takes on the same call. If they ${seller ? 'offer' : 'ask'} a price you may accept, accept it.`,
+    'If whoever answers says they cannot negotiate or can only take a message, state your best current offer and pickup terms once, clearly, and end the call. Do not argue with a message-taker.',
+    ...(mandate.dealbreakers.length ? [`Dealbreakers: ${mandate.dealbreakers.join('; ')}. If they insist on one, decline it and end the call politely.`] : []),
+    'If no price works, give your best final offer once and end the call politely.',
+    'Address and payment details are sent in writing after the call; do not give them on the call.',
+    'Say you are an AI assistant and that the call may be recorded.',
+  ];
+}
+
+/**
+ * Standing call-answering instruction for our own Fo. Fo answers its phone outside this chat, so it has
+ * to read as a lasting instruction with full authority, or Fo just takes a message. The proxy calls this
+ * itself (deal start, rule changes, the other side about to dial); the agent can add context via brief_fo.
+ */
+export async function briefFo(ctx: Ctx, context?: string) {
+  const { deal, mandate } = load(ctx);
+  const cp = ctx.cfg.counterparty;
+  const from = [cp.phone, cp.email].filter(Boolean).join(' / ');
+  const text = `STANDING INSTRUCTION for answering the phone, from ${ctx.cfg.owner}. Save it to your memory and apply it until deal ${ctx.dealId} is closed.\n` +
+    `Whenever you answer a call from ${cp.name}${from ? ` (${from})` : ''} or from anyone who mentions deal ${ctx.dealId}, you are not a general assistant taking a message: ` +
+    `you are ${ctx.cfg.owner}'s negotiator for this ${ctx.cfg.role === 'seller' ? 'sale' : 'purchase'}. You counter and agree live on that call; you never check back with anyone first.\n` +
+    `Item: ${deal.item}\n` +
+    (mandate.allowedShare.length ? `You may share: ${mandate.allowedShare.join(', ')}.\n` : '') +
+    (context ? `Context from ${ctx.cfg.owner}'s negotiation agent: ${context}\n` : '') +
+    `Rules on that call:\n${liveCallRules(ctx, mandate).map((r) => `- ${r}`).join('\n')}\n` +
+    `If they text about deal ${ctx.dealId}, do not reply yourself: my negotiation agent reads the thread and answers through you shortly.\n` +
+    `Do not contact anyone now. Reply confirming you will use this when you answer the phone.`;
+  const { foTaskId, status } = await ctx.fo.brief(ctx.dealId, text);
+  ctx.store.markProcessed(`own:${foTaskId}`);
+  ctx.store.event(ctx.dealId, 'FoBriefed', 'fo', { foConversationId: foTaskId, reply: status.summary, briefVersion: BRIEF_VERSION, by: context ? 'agent' : 'proxy' });
+  return { briefed: true, foReply: status.summary?.slice(0, 300) };
+}
+
+/**
+ * Before our Fo dials, the other side's Fo must already hold its standing instruction, or it answers
+ * as a receptionist. The peer proxy briefs on demand when asked.
+ */
+export async function requirePeerReady(ctx: Ctx) {
+  if (!ctx.cfg.peerUrl) return;
+  const cp = ctx.cfg.counterparty.name;
+  let ready = false;
+  try {
+    const r = await fetch(`${ctx.cfg.peerUrl}/api/deals/${encodeURIComponent(ctx.dealId)}/readiness`);
+    ready = r.ok && Boolean(((await r.json()) as { briefed?: boolean }).briefed);
+  } catch { /* peer down: treat as not ready */ }
+  if (!ready) {
+    ctx.store.event(ctx.dealId, 'GuardBlocked', 'system', { guard: 'peer_ready', reason: `${cp}'s Fo is not briefed for live negotiation yet` });
+    throw new ToolError(`${cp}'s Fo is being briefed now so it can negotiate live; do not call yet. schedule_followup({inMinutes: 2}) and place the same call then.`);
+  }
 }
 
 /** Dispatch to Fo, record the action, and either complete it now or schedule polling. */
@@ -96,40 +177,33 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
       const c = checkOffer(ctx.cfg.role, mandate, amount, ctx.store.lastOffer(ctx.dealId, 'self')?.amount);
       if (!c.ok) fail(c.reason!);
     }
+    checkChannel(ctx, channel);
     const target = resolveTarget(ctx, channel);
     const script = await guarded(ctx, mandate, channel, i.message, amount);
+    if (channel === 'call') await requirePeerReady(ctx);
     const offer = ctx.store.addOffer(ctx.dealId, 'self', amount, i.terms ?? '', i.rationale ?? '');
     ctx.store.event(ctx.dealId, 'OfferMade', 'claude', { from: 'self', amount, terms: i.terms, accept: Boolean(i.accept), rationale: i.rationale });
-    const res = await dispatch(ctx, stage, channel, target, i.accept ? `Accept offer of $${amount}` : `Offer $${amount}`, script,
-      [`The price in this message is $${amount}. Do not negotiate or change it.`]);
+    const res = channel === 'call'
+      ? await dispatch(ctx, stage, channel, target, i.accept ? `Accept $${amount} and settle the details` : `Open at $${amount} and settle the deal`, script,
+        liveCallRules(ctx, mandate))
+      : await dispatch(ctx, stage, channel, target, i.accept ? `Accept offer of $${amount}` : `Offer $${amount}`, script,
+        [`The price in this message is $${amount}. Do not negotiate or change it.`]);
     return { offerId: offer.id, ...res };
   },
 
   async fo_act(ctx, i) {
     const { mandate, stage } = load(ctx);
     const channel = i.channel as Channel;
+    checkChannel(ctx, channel);
     const target = resolveTarget(ctx, channel, i.target);
     const script = await guarded(ctx, mandate, channel, i.script);
-    return dispatch(ctx, stage, channel, target, i.objective, script, i.constraints ?? []);
+    if (channel === 'call') await requirePeerReady(ctx);
+    const constraints = [...(i.constraints ?? []), ...(channel === 'call' ? liveCallRules(ctx, mandate) : [])];
+    return dispatch(ctx, stage, channel, target, i.objective, script, constraints);
   },
 
   async brief_fo(ctx, i) {
-    const { mandate } = load(ctx);
-    const lastSelf = ctx.store.lastOffer(ctx.dealId, 'self')?.amount ?? mandate.openingOffer;
-    const req = Number(i.callAuthority);
-    // Bounded authority: at most two rounds of concession from the current offer, and never past the true limit.
-    const seller = ctx.cfg.role === 'seller';
-    const twoRounds = seller ? lastSelf - 2 * mandate.maxConcessionPerRound : lastSelf + 2 * mandate.maxConcessionPerRound;
-    const authority = seller
-      ? Math.max(req, twoRounds, mandate.floorOrCeiling)
-      : Math.min(req, twoRounds, mandate.floorOrCeiling);
-    const text = `${i.instructions}\n\nIf ${ctx.cfg.counterparty.name} or their assistant calls about deal ${ctx.dealId}: ` +
-      `you may agree to a price ${seller ? 'at or above' : 'at or below'} $${authority}. Never say this number or hint at it. ` +
-      `For anything else (address, payment details, other terms) say you will confirm in writing. Disclose you are an AI assistant.`;
-    const { foTaskId, status } = await ctx.fo.brief(ctx.dealId, text);
-    ctx.store.markProcessed(`own:${foTaskId}`);
-    ctx.store.event(ctx.dealId, 'FoBriefed', 'fo', { authority, requested: req, foConversationId: foTaskId, reply: status.summary });
-    return { callAuthority: authority, foReply: status.summary?.slice(0, 300) };
+    return briefFo(ctx, String(i.instructions));
   },
 
   async request_approval(ctx, i) {

@@ -1,7 +1,9 @@
 import { Handshake } from "lucide-react";
+import { useQueries } from "@tanstack/react-query";
 import { NavLink, Outlet } from "react-router-dom";
 import { useHealth, usePendingApprovals } from "@/lib/api";
 import { PROXIES, useProxy } from "@/lib/proxy";
+import type { Health } from "@/lib/types";
 import { cn, relative } from "@/lib/utils";
 import { Badge } from "./ui/badge";
 
@@ -30,8 +32,25 @@ function HealthDot() {
   );
 }
 
+/** Label each proxy with its OWNER_NAME from /api/health; fall back to the configured name while offline. */
+function useProxyLabels() {
+  const health = useQueries({
+    queries: PROXIES.map((p) => ({
+      queryKey: [p.url, "/api/health", "label"],
+      queryFn: async () => (await fetch(`${p.url}/api/health`)).json() as Promise<Health>,
+      staleTime: 60_000,
+      retry: false,
+    })),
+  });
+  return PROXIES.map((p, i) => {
+    const h = health[i].data;
+    return h?.owner ? `${h.owner} (${h.role})` : p.name;
+  });
+}
+
 function ProxySelect() {
   const { proxy, setProxyUrl } = useProxy();
+  const labels = useProxyLabels();
   return (
     <select
       value={proxy.url}
@@ -39,9 +58,9 @@ function ProxySelect() {
       className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
       aria-label="Select proxy"
     >
-      {PROXIES.map((p) => (
+      {PROXIES.map((p, i) => (
         <option key={p.url} value={p.url}>
-          {p.name} — {p.url.replace(/^https?:\/\//, "")}
+          {labels[i]} — {p.url.replace(/^https?:\/\//, "")}
         </option>
       ))}
     </select>
@@ -78,6 +97,7 @@ export function Layout() {
           </NavLink>
           <nav className="flex items-center gap-1">
             <NavItem to="/">Deals</NavItem>
+            <NavItem to="/new">New deal</NavItem>
             <NavItem to="/approvals">
               Approvals
               {pending > 0 && (

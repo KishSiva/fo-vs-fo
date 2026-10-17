@@ -67,7 +67,7 @@ export class MockFoAdapter implements FoAdapter {
       { conv: string; sender: string; channel: string; text: string; at: string }[];
     const byConv = new Map<string, FoInbound>();
     for (const r of rows) {
-      const c = byConv.get(r.conv) ?? { conversationId: r.conv, channel: r.channel, title: `From ${r.sender}`, turns: [] };
+      const c = byConv.get(r.conv) ?? { conversationId: r.conv, channel: r.channel, title: `From ${r.sender}`, startedAt: r.at, turns: [] };
       c.turns.push({ role: 'user', text: r.text, at: r.at });
       byConv.set(r.conv, c);
     }

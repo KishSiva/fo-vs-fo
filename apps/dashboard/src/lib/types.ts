@@ -30,6 +30,7 @@ export interface Deal {
   stage: Stage;
   status: "active" | "paused" | "closed" | "abandoned";
   counterparty: { name: string; kind: "fo" | "human" | "business"; phone?: string; email?: string };
+  channelPref: ChannelPref;
   createdAt: string;
 }
 
@@ -119,3 +120,22 @@ export interface Scorecard {
 }
 
 export type Command = "nudge" | "pause" | "resume" | "abandon";
+/** auto = the proxy picks text or call per message. */
+export type ChannelPref = "auto" | "text" | "call";
+
+/** Full private mandate, only seen while creating a deal. The API never returns it afterwards. */
+export interface FullMandate extends Mandate {
+  floorOrCeiling: number;
+  walkAwayAt: number;
+  secrets: Record<string, string>;
+}
+
+export interface ParsedScenario {
+  item: string;
+  summary: string;
+  seller: FullMandate;
+  buyer: FullMandate;
+  assumptions: string[];
+  warnings: string[];
+  names: { seller: string; buyer: string };
+}

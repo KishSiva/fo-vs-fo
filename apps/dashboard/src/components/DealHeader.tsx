@@ -17,7 +17,6 @@ export function CounterpartyLine({ deal }: { deal: Deal }) {
       <Icon className="h-3.5 w-3.5" />
       <span className="font-medium text-slate-700">{cp.name}</span>
       <span>({cp.kind === "fo" ? "Fo agent" : cp.kind})</span>
-      {cp.email && <span className="font-mono">{cp.email}</span>}
       {cp.phone && <span className="font-mono">{cp.phone}</span>}
     </div>
   );
