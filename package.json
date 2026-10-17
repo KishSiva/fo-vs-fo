@@ -1,0 +1,27 @@
+{
+  "name": "proxydeal",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "discover:fo": "tsx scripts/discover-fo.ts",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@proxydeal/fo": "workspace:*",
+    "@proxydeal/llm": "workspace:*",
+    "dotenv": "^16.4.5"
+  }
+}

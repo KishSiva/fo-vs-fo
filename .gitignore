@@ -4,3 +4,9 @@ node_modules/
 __pycache__/
 .venv/
 .DS_Store
+# Fo OAuth tokens (per proxy) and local DBs
+.fo-auth/
+*.db
+*.db-journal
+dist/
+!.env.example
