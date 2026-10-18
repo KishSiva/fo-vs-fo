@@ -24,6 +24,8 @@ class LazyFo implements FoAdapter {
   inbound: FoAdapter['inbound'] = async (s, i) => (await this.get()).inbound(s, i);
   transcript: FoAdapter['transcript'] = async (id) => (await this.get()).transcript(id);
   brief: FoAdapter['brief'] = async (d, m) => (await this.get()).brief(d, m);
+  reply: FoAdapter['reply'] = async (id, m) => (await this.get()).reply(id, m);
+  quoteThread: FoAdapter['quoteThread'] = async (id, t, s, r) => (await this.get()).quoteThread(id, t, s, r);
 }
 
 let foConn: FoConnection | undefined;
@@ -57,7 +59,7 @@ if (process.argv.includes('--once')) {
 }
 
 worker.start();
-await startApi(store, cfg, worker, foSignedIn, mockFo);
+await startApi(store, cfg, worker, foSignedIn, fo, mockFo);
 log.info({ port: cfg.port, mockFo: cfg.mockFo }, `${cfg.owner} proxy (${cfg.role}) up`);
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const)

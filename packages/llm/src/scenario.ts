@@ -140,7 +140,7 @@ const LISTING_SYSTEM = (role: Role) => `You set up an AI negotiation agent that 
 Inputs: the listing (public, pasted from Marketplace) and the owner's private brief (their budget, needs, timeline, what things are worth to them). The brief may be empty.
 
 Output fields:
-- item: one paragraph describing the item from the listing, as both sides see it. Public facts only.
+- item: one paragraph describing the item from the listing, as both sides see it. Public facts only; leave out the lister's name (it goes in listerName).
 - summary: one plain sentence, e.g. "Buying a 2023 RadCity e-bike listed at $1,400; budget up to $950."
 - askingPrice: the listed price in whole dollars, or null.
 - listerName: the lister's name if the listing shows one, else null.
@@ -152,6 +152,7 @@ Output fields:
   - dealbreakers: conditions that end the deal.
   - allowedShare: short snake_case labels of facts the agent may share (e.g. pickup_window, can_pay_cash).
   - secrets: private facts the agent knows but must never say outright (exact budget, address, payment handles), plus private notes the agent needs to judge trades: what extras are worth to the owner, deadlines, alternatives if no deal. key is snake_case.
+    A fact goes in allowedShare OR secrets, never both. Public facts (comparable listing prices, the listing itself) are shareable: put them in allowedShare, not secrets.
 - assumptions: one line for each value you chose because the brief didn't say.
 - warnings: real problems only (e.g. opening above the buyer's own limit).
 

@@ -1,9 +1,9 @@
-import { eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import {
-  actions, approvals, commitments, now, checkOffer, acceptable, nearLimit, canTransition, requiresVerification, STAGES, allowedChannels, canPlaceCall,
+  actions, approvals, commitments, events, now, checkOffer, acceptable, nearLimit, canTransition, requiresVerification, STAGES, allowedChannels, canPlaceCall,
   isMarketplace, type Channel, type ChannelPref, type Counterparty, type Mandate, type Stage,
 } from '@proxydeal/core';
-import { guardOutbound } from '@proxydeal/llm';
+import { guardOutbound, redactPrivate } from '@proxydeal/llm';
 import { verify } from '@proxydeal/verify';
 import type { FoAdapter, FoStatus } from '@proxydeal/fo';
 import { hashPayload, type Store } from './store.js';
@@ -70,8 +70,16 @@ function resolveTarget(ctx: Ctx, channel: Channel, target?: string): string {
   return t;
 }
 
+/** Dollar amounts the other side already named (their offers and numbers in their messages). */
+function amountsSaidByThem(ctx: Ctx): number[] {
+  const fromOffers = ctx.store.offers(ctx.dealId).filter((o) => o.from === 'counterparty').map((o) => o.amount);
+  const fromText = ctx.store.db.select().from(events).where(and(eq(events.dealId, ctx.dealId), eq(events.kind, 'InboundMessage'))).all()
+    .flatMap((e) => [...String((e.data as { text?: string }).text ?? '').matchAll(/\$?\b(\d{1,2},?\d{3}|\d{3,5})\b/g)].map((x) => Number(x[1].replace(',', ''))));
+  return [...new Set([...fromOffers, ...fromText])].filter((n) => n > 0);
+}
+
 async function guarded(ctx: Ctx, mandate: Mandate, channel: Channel, script: string, offerAmount?: number) {
-  const g = await guardOutbound({ channel, script, mandate, role: ctx.cfg.role, offerAmount });
+  const g = await guardOutbound({ channel, script, mandate, role: ctx.cfg.role, offerAmount, saidByThem: amountsSaidByThem(ctx) });
   if (g.removed.length) ctx.store.event(ctx.dealId, 'LeakBlocked', 'system', { removed: g.removed });
   if (!g.ok) {
     const guard = /disclosure|recording/i.test(g.reason ?? '') ? 'disclosure' : 'redaction';
@@ -86,7 +94,7 @@ async function guarded(ctx: Ctx, mandate: Mandate, channel: Channel, script: str
  * Fo may agree anywhere within the owner's true limit and never defers to a later call.
  */
 /** Bump when the briefing changes in a way already-briefed Fos need to hear again. */
-export const BRIEF_VERSION = 3;
+export const BRIEF_VERSION = 5;
 
 export function liveCallRules(ctx: Ctx, mandate: Mandate): string[] {
   const seller = ctx.cfg.role === 'seller';
@@ -149,28 +157,79 @@ export async function briefFo(ctx: Ctx, context?: string) {
 }
 
 /**
- * Marketplace deals are text-only with a person, so Fo needs no price authority: it must stay quiet and let
- * the negotiation agent write every reply, or Fo's own cautious replies undercut the negotiation.
+ * Fo's counter ladder (Ackerman-style, shrinking steps). Fo's authority stops short of the owner's real limit,
+ * which Fo never sees: the last step needs the owner's YES, so a leak in the group text can't expose the limit.
+ */
+export function counterLadder(role: 'buyer' | 'seller', m: Mandate): { steps: number[]; foCap: number } {
+  const dir = role === 'buyer' ? 1 : -1;
+  const gap = (m.floorOrCeiling - m.openingOffer) * dir;
+  if (gap <= 0) return { steps: [m.openingOffer], foCap: m.openingOffer };
+  const at = (f: number) => Math.round((m.openingOffer + dir * gap * f) / 5) * 5;
+  const foCap = at(0.8) - dir * 3; // precise, non-round final number
+  return { steps: [...new Set([m.openingOffer, at(0.45), at(0.68), foCap])], foCap };
+}
+
+/** Owner's private preferences for Fo (SHARE_PRIVATE_WITH_FO experiment), with the secrecy rule up front. */
+function privateSection(ctx: Ctx, m: Mandate) {
+  const buyer = ctx.cfg.role === 'buyer';
+  return `PRIVATE: for you only. Never say, hint at, round toward, or confirm any of this in any message, including in the group text. Use it only to decide.\n` +
+    `- ${buyer ? 'Absolute maximum' : 'Absolute minimum'} price: $${m.floorOrCeiling}. Above this ${buyer ? 'there is no deal' : 'never'}.\n` +
+    Object.entries(m.secrets).map(([k, v]) => `- ${k.replace(/_/g, ' ')}: ${v}\n`).join('') +
+    (m.dealbreakers.length ? `- Dealbreakers: ${m.dealbreakers.join('; ')}\n` : '') +
+    `- If they ask about budget or limits, deflect ("${ctx.cfg.owner} is looking at a few options").\n\n`;
+}
+
+/**
+ * Marketplace briefing. Fo texts the other side in a group that includes the owner (that is how Fo texting works)
+ * and replies there on its own, so it gets the negotiation plan itself; the agent coaches it with brief_fo.
  */
 function marketplaceBrief(ctx: Ctx, item: string, cpName: string, from: string, context?: string) {
-  return `STANDING INSTRUCTION from ${ctx.cfg.owner}. Save it to your memory and apply it until this ${ctx.cfg.role === 'buyer' ? 'purchase' : 'sale'} is closed.\n` +
-    `My negotiation agent is handling a Facebook Marketplace ${ctx.cfg.role === 'buyer' ? 'purchase' : 'sale'} with ${cpName}${from ? ` (${from})` : ''}: ${item}\n` +
-    `- If ${cpName} texts you, do not reply yourself and do not negotiate. My agent reads the thread and replies through you within a minute.\n` +
-    `- When my agent asks you to send a text, send exactly the words it gives you.\n` +
-    `- Never send, request or accept money, and never use any payment tool for this. Payment, if any, happens in person.\n` +
+  const buyer = ctx.cfg.role === 'buyer';
+  const m = ctx.store.mandate(ctx.dealId);
+  const { steps, foCap } = counterLadder(ctx.cfg.role, m);
+  const owner = ctx.cfg.owner;
+  const handed = ctx.store.db.select().from(events).where(and(eq(events.dealId, ctx.dealId), eq(events.kind, 'PlanHandedOff'))).orderBy(desc(events.id)).get();
+  const planText = handed ? String((handed.data as { planText?: string }).planText ?? '') : '';
+  return `STANDING INSTRUCTION from ${owner}. Save it to your memory and apply it until this ${buyer ? 'purchase' : 'sale'} is closed.\n` +
+    `You are ${owner}'s voice in a Facebook Marketplace ${buyer ? 'purchase' : 'sale'} with ${cpName}${from ? ` (${from})` : ''}, by text. Item: ${item}\n` +
+    `My negotiation agent plans the strategy and may send you exact messages or updated next moves; follow them. Between those, you may reply to ${cpName} yourself using this plan.\n\n` +
+    (ctx.cfg.sharePrivateWithFo ? privateSection(ctx, m) : '') +
+    (planText ? `PLAN (from my negotiation agent; follow it)\n${planText}\n\nALWAYS\n` : `PLAN\n`) +
+    `1. Discover before bargaining: ask why they're selling, their timeline or deadline, and whether they have anything else they need gone (accessories, furniture). Their reasons are leverage for a better package.\n` +
+    `2. Never accept the asking price, and never say a price "works". When they name a price, acknowledge it warmly and counter.\n` +
+    // With a hand-off plan, its ladder is the only one: a second default ladder would contradict it.
+    (planText
+      ? `3. Use only the counter ladder in the plan above, one step per counter. Never go past its last step; if they hold firm there, say you'll check with ${owner} and stop.\n`
+      : `3. Counter ladder (one step per counter, each with a reason such as comparable listings, battery age, quick pickup, paying on the spot): ${steps.map((n) => `$${n}`).join(' → ')}. ` +
+        `Never ${buyer ? 'offer more than' : 'go lower than'} $${foCap}. If they hold firm past that, say you'll check with ${owner} and stop.\n`) +
+    `4. Look for trades that help both sides instead of only moving price: pickup timing that fits their deadline, ${buyer ? 'carrying it out yourselves' : 'flexible pickup'}, ${buyer ? 'taking extra items off their hands' : 'including extras'}.\n` +
+    `5. Never agree to a final price or say "deal". When terms look close, repeat them back and say: "Let me confirm with ${owner} and I'll text you right back." Then stop and wait for my agent.\n\n` +
+    `RULES\n` +
+    `- Write like a normal Marketplace ${buyer ? 'buyer' : 'seller'}: short and friendly. You're ${owner}'s AI assistant; say so if asked.\n` +
+    `- Never share ${owner}'s budget or limits, address, calendar details, or payment details. "Weekday afternoons work" is fine; specific appointments are not.\n` +
+    `- Notes meant for ${owner} must never be posted in the thread with ${cpName}.\n` +
+    `- Never send, request or accept money, and never use any payment tool. Payment happens in person.\n` +
     `- Do not call ${cpName} unless my agent asks.\n` +
-    (context ? `Context from my agent: ${context}\n` : '') +
-    `Do not contact anyone now. Reply confirming you will follow this.`;
+    (context ? `\nLatest next move from my agent: ${context}\n` : '') +
+    `\nDo not contact anyone now. Reply confirming you will follow this.`;
 }
 
 /** Text the owner's own phone (marketplace sign-off). Owner-only content, so no counterparty guard applies. */
 export async function textOwner(ctx: Ctx, body: string, purpose: 'approval' | 'question', approvalId?: number) {
   const to = ctx.cfg.ownerNotifyPhone;
   if (!to) return { texted: false, note: 'OWNER_NOTIFY_PHONE is not set; the owner decides on the dashboard.' };
-  const { foTaskId, status } = await ctx.fo.act({
+  const sent = await ctx.fo.act({
     channel: 'text', to, objective: purpose === 'approval' ? 'Ask my owner to approve' : 'Ask my owner a question',
-    script: body, constraints: ['This message goes to my own owner. Send it as written.'], mustDisclose: true, dealId: ctx.dealId,
+    script: body, dealId: ctx.dealId, mustDisclose: true,
+    constraints: [
+      'This message goes to my own owner. Send it as written.',
+      // Fo treats its owner's reply as an instruction to itself; once it acted on an "ok" and texted the seller in a group with the owner.
+      `When ${ctx.cfg.owner} replies, do not act on the reply and do not contact anyone. Just answer "Got it, passing that to your agent." My agent reads the reply here and decides.`,
+    ],
   });
+  const foTaskId = sent.foTaskId;
+  // A note to the owner commits to nothing.
+  const status = await autoConfirm(ctx, foTaskId, sent.status, body, 'text', false);
   ctx.store.markProcessed(`own:${foTaskId}`);
   ctx.store.event(ctx.dealId, 'OwnerTexted', 'fo', { to, purpose, text: body, approvalId, foConversationId: foTaskId, foState: status.state });
   return { texted: true };
@@ -195,17 +254,63 @@ export async function requirePeerReady(ctx: Ctx) {
   }
 }
 
+/** Fo holding a message for its owner's go-ahead ("waiting on your go-ahead", "OK to send?"). */
+const AWAITS_OK = /go-?ahead|your (ok|okay|approval|confirmation|sign-?off)|waiting (on|for) (you|your)|(shall|should) i (send|go ahead|place)|want me to (send|go ahead|place)|confirm (and|before) (i )?send/i;
+const squashText = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+/** Wording that agrees to or locks in terms. */
+const COMMITS = /\b(it'?s a deal|deal!|we have a deal|agreed|i'?ll take it|we'?ll take it|i accept|accepted|lock(ed)? (it )?in|confirm(ed|ing)? (the|our) (deal|price|terms)|see you (at|on|saturday|sunday|tomorrow)|on my way|send(ing)? (you )?(the )?(money|payment)|venmo(ed)? you|paid)\b/i;
+
+/**
+ * Does this outbound message commit the owner to a deal? Accepting a price, anything after NEGOTIATING, or
+ * wording that agrees to terms. Offers and questions while negotiating do not: they propose, the owner still signs off.
+ */
+export function commitsToDeal(stage: Stage, script: string, accept = false): boolean {
+  return accept || stage !== 'NEGOTIATING' || COMMITS.test(script);
+}
+
+/**
+ * Fo has its own pre-send check ("waiting on your go-ahead"). With FO_AUTO_CONFIRM=1 the owner lets the proxy
+ * answer it, but only for messages that do not commit to a deal and only when Fo is holding exactly the words
+ * the agent wrote (already guarded). Anything else is left held for the owner: approve it on the dashboard,
+ * which answers Fo through the same MCP connection. Never used for payments.
+ */
+export async function autoConfirm(ctx: Ctx, foTaskId: string, st: FoStatus, script: string, channel: Channel, commits: boolean): Promise<FoStatus> {
+  const ask = `${st.summary ?? ''} ${st.progress ?? ''}`;
+  // Look for the question in Fo's own words only: our message (quoted back by Fo) can itself say "your OK".
+  const foWords = ask.split(script).join(' ');
+  if (st.state === 'failed' || /^\s*SENT\b/.test(st.summary ?? '') || !AWAITS_OK.test(foWords)) return st;
+  const matches = squashText(ask).includes(squashText(script).slice(0, 60)) && squashText(script).length > 0;
+  const why = !matches ? 'Fo is holding words that differ from what the agent wrote'
+    : commits ? 'This message commits to a deal, so the owner approves it'
+    : !ctx.cfg.foAutoConfirm ? 'Auto-approval is off (FO_AUTO_CONFIRM)' : null;
+  if (why) {
+    ctx.store.event(ctx.dealId, 'FoHeld', 'fo', { foConversationId: foTaskId, channel, script, foAsked: st.summary?.slice(0, 500), reason: why, canApprove: matches });
+    return st;
+  }
+  const reply = confirmText(ctx, channel);
+  // pollOwnerConversations reads new "user" turns in owner conversations: this one is ours, not the owner's.
+  ctx.store.markProcessed(`ourreply:${foTaskId}:${reply}`);
+  const next = await ctx.fo.reply(foTaskId, reply);
+  ctx.store.event(ctx.dealId, 'FoConfirmed', 'system', { foConversationId: foTaskId, channel, foReply: next.summary?.slice(0, 300), by: 'auto (no deal commitment)' });
+  return next;
+}
+
+export const confirmText = (ctx: Ctx, channel: Channel) =>
+  `Yes, approved by ${ctx.cfg.owner}. ${channel === 'call' ? 'Place the call now' : 'Send it now, exactly as written'}.`;
+
 /** Dispatch to Fo, record the action, and either complete it now or schedule polling. */
-async function dispatch(ctx: Ctx, stage: Stage, channel: Channel, target: string, objective: string, script: string, constraints: string[]) {
+async function dispatch(ctx: Ctx, stage: Stage, channel: Channel, target: string, objective: string, script: string, constraints: string[], commits: boolean) {
   const started = now();
-  const { foTaskId, status } = await ctx.fo.act({
+  const sent = await ctx.fo.act({
     channel, to: target, objective, script, constraints, mustDisclose: true, maxDurationMin: 10, dealId: ctx.dealId,
   });
+  const foTaskId = sent.foTaskId;
   const action = ctx.store.db.insert(actions).values({
     dealId: ctx.dealId, stage, channel, target, objective, foTaskId, startedAt: started,
   }).returning().get();
   ctx.store.markProcessed(`own:${foTaskId}`);
-  ctx.store.event(ctx.dealId, 'FoAction', 'fo', { channel, target, objective, foConversationId: foTaskId, script });
+  ctx.store.event(ctx.dealId, 'FoAction', 'fo', { channel, target, objective, foConversationId: foTaskId, script, commits });
+  const status = await autoConfirm(ctx, foTaskId, sent.status, script, channel, commits);
   if (status.state === 'working') ctx.store.enqueue('fo_poll', { actionId: action.id, foTaskId, polls: 0 }, { dealId: ctx.dealId, inMs: 15_000 });
   else completeAction(ctx.store, ctx.dealId, action.id, channel, status, { triggerTurn: false });
   return { actionId: action.id, foState: status.state, foReply: status.summary?.slice(0, 500) };
@@ -248,9 +353,9 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     ctx.store.event(ctx.dealId, 'OfferMade', 'claude', { from: 'self', amount, terms: i.terms, accept: Boolean(i.accept), rationale: i.rationale });
     const res = channel === 'call'
       ? await dispatch(ctx, stage, channel, target, i.accept ? `Accept $${amount} and settle the details` : `Open at $${amount} and settle the deal`, script,
-        liveCallRules(ctx, mandate))
+        liveCallRules(ctx, mandate), commitsToDeal(stage, script, Boolean(i.accept)))
       : await dispatch(ctx, stage, channel, target, i.accept ? `Accept offer of $${amount}` : `Offer $${amount}`, script,
-        [`The price in this message is $${amount}. Do not negotiate or change it.`]);
+        [`The price in this message is $${amount}. Do not negotiate or change it.`], commitsToDeal(stage, script, Boolean(i.accept)));
     return { offerId: offer.id, ...res };
   },
 
@@ -262,13 +367,55 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     const script = await guarded(ctx, mandate, channel, i.script);
     if (channel === 'call') await requirePeerReady(ctx);
     const constraints = [...(i.constraints ?? []), ...(channel === 'call' ? liveCallRules(ctx, mandate) : [])];
-    return dispatch(ctx, stage, channel, target, i.objective, script, constraints);
+    return dispatch(ctx, stage, channel, target, i.objective, script, constraints, commitsToDeal(stage, script));
   },
 
   async ask_owner(ctx, i) {
     const res = await textOwner(ctx, String(i.question), 'question');
     if (!res.texted) throw new ToolError(res.note ?? 'Could not text the owner');
     return { ...res, note: 'Their reply will arrive as a new turn. Keep the deal moving; schedule_followup if you are waiting on them.' };
+  },
+
+  /**
+   * Hand-off strategy: the agent's whole plan goes to Fo in one standing instruction, then Fo sends the opener and
+   * negotiates. The ladder must stay within Fo's cap (below the owner's real limit) and the max step; the plan must
+   * not contain the real limit or any private fact, since Fo works in a group text.
+   */
+  async handoff_plan(ctx, i) {
+    const { mandate, stage } = load(ctx);
+    if (!marketplace(ctx)) throw new ToolError('handoff_plan is for marketplace deals; use propose and fo_act here.');
+    if (stage !== 'NEGOTIATING') throw new ToolError('Hand the plan off at the start, while negotiating.');
+    const buyer = ctx.cfg.role === 'buyer';
+    const share = ctx.cfg.sharePrivateWithFo;
+    const foCap = share ? mandate.floorOrCeiling : counterLadder(ctx.cfg.role, mandate).foCap;
+    const ladder = (i.ladder ?? []) as { amount: number; reason: string }[];
+    if (!ladder.length) throw new ToolError('The ladder needs at least one counter offer.');
+    const fail = (reason: string): never => {
+      ctx.store.event(ctx.dealId, 'GuardBlocked', 'system', { guard: 'mandate', reason });
+      throw new ToolError(reason);
+    };
+    ladder.forEach((step, n) => {
+      const a = Number(step.amount);
+      if (!Number.isFinite(a) || a <= 0) fail(`Ladder step ${n + 1} needs a positive amount.`);
+      if (buyer ? a > foCap : a < foCap) fail(`Ladder step ${n + 1} ($${a}) is past Fo's authority of $${foCap}. Fo stops there and checks with ${ctx.cfg.owner}; end the ladder at or before it.`);
+      const prev = n === 0 ? mandate.openingOffer : Number(ladder[n - 1].amount);
+      if (n > 0 && (buyer ? a < prev : a > prev)) fail(`Ladder steps must move toward the other side; step ${n + 1} goes backwards.`);
+      if (n > 0 && Math.abs(a - prev) > mandate.maxConcessionPerRound) fail(`Step ${n + 1} moves $${Math.abs(a - prev)}, more than the max of $${mandate.maxConcessionPerRound} per round.`);
+    });
+    const list = (title: string, xs?: string[]) => (xs?.length ? `${title}:\n${xs.map((x) => `- ${x}`).join('\n')}\n` : '');
+    const planText = list('Discovery questions, in order', i.discovery) + list('Listen for and use', i.interests) +
+      `Counter ladder (one step per counter, give the reason; never go past the last step):\n${ladder.map((st, n) => `${n + 1}. $${st.amount}: ${st.reason}`).join('\n')}\n` +
+      list('Trades to offer', i.trades) + list('Conditions', i.conditions) + list(`Stop and say you'll confirm with ${ctx.cfg.owner} when`, i.checkWithOwner) +
+      `Walk away: ${i.walkAway}\nTone: ${i.tone}`;
+    // Fo texts in a group, so nothing private may be in the plan unless the owner chose to share it (experiment).
+    const scrub = redactPrivate(planText, mandate, -1);
+    if (!share && scrub.removed.length) fail(`The plan contains private information (${scrub.removed.join(', ')}). Fo works in a group text; take it out.`);
+    const cp = counterpartyOf(ctx.store, ctx.cfg, ctx.dealId);
+    const opener = await guarded(ctx, mandate, 'text', String(i.opener));
+    ctx.store.event(ctx.dealId, 'PlanHandedOff', 'claude', { planText, ladder, opener, foCap, discovery: i.discovery, trades: i.trades, checkWithOwner: i.checkWithOwner, walkAway: i.walkAway });
+    const brief = await briefFo(ctx);
+    const sent = await dispatch(ctx, stage, 'text', resolveTarget(ctx, 'text', cp.phone), 'Opening text (hand-off plan)', opener, [], false);
+    return { handedOff: true, foBriefReply: brief.foReply, opener: sent, note: 'Fo now negotiates on its own from this plan. Monitor; step in only per the hand-off rules.' };
   },
 
   async brief_fo(ctx, i) {

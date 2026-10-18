@@ -2,15 +2,16 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { existsSync, readFileSync } from 'node:fs';
 import { and, asc, eq, gte, desc } from 'drizzle-orm';
-import { approvals, commitments, deals, events, offers, verifications, foCapabilities, redactMandate, now, CHANNEL_PREFS, mandates, type ChannelPref, type Mandate } from '@proxydeal/core';
+import { approvals, commitments, deals, events, offers, verifications, foCapabilities, redactMandate, now, CHANNEL_PREFS, STRATEGIES, mandates, type ChannelPref, type Mandate, type Strategy } from '@proxydeal/core';
 import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems } from '@proxydeal/llm';
-import type { MockFoAdapter } from '@proxydeal/fo';
+import type { FoAdapter, MockFoAdapter } from '@proxydeal/fo';
+import { confirmText } from './handlers.js';
 import type { Store } from './store.js';
 import type { Config } from './config.js';
 import type { Worker } from './worker.js';
 import { recordCall, type CallCopy } from './calls.js';
 
-export async function startApi(store: Store, cfg: Config, worker: Worker, foSignedIn: () => boolean, mockFo?: MockFoAdapter) {
+export async function startApi(store: Store, cfg: Config, worker: Worker, foSignedIn: () => boolean, fo: FoAdapter, mockFo?: MockFoAdapter) {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/], methods: ['GET', 'POST'] });
   const db = store.db;
@@ -69,6 +70,28 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     return row;
   });
 
+  /**
+   * The owner approves a message Fo is holding for its go-ahead (one that commits to a deal, or any message when
+   * auto-approval is off). The answer goes to Fo through the same MCP connection, in Fo's own conversation.
+   */
+  app.post<{ Params: { id: string }; Body: { foConversationId?: string } }>('/api/deals/:id/fo-confirm', async (req, reply) => {
+    const conv = req.body?.foConversationId;
+    const held = store.db.select().from(events).where(and(eq(events.dealId, req.params.id), eq(events.kind, 'FoHeld'))).all()
+      .find((e) => (e.data as { foConversationId?: string }).foConversationId === conv);
+    if (!held) return reply.code(404).send({ error: 'No held Fo message with that id on this deal' });
+    const d = held.data as { channel: 'text' | 'call'; canApprove?: boolean };
+    if (!d.canApprove) return reply.code(409).send({ error: 'Fo is holding different words than the agent wrote; review it in the Fo app instead' });
+    if (store.isProcessed(`fo-confirm:${conv}`)) return reply.code(409).send({ error: 'Already approved' });
+    const yes = confirmText({ store, fo, cfg, dealId: req.params.id }, d.channel);
+    store.markProcessed(`ourreply:${conv}:${yes}`);
+    const st = await fo.reply(conv!, yes);
+    store.markProcessed(`fo-confirm:${conv}`);
+    store.event(req.params.id, 'FoConfirmed', 'human', { foConversationId: conv, channel: d.channel, foReply: st.summary?.slice(0, 300), by: `${cfg.owner} (dashboard)` });
+    store.enqueue('turn', { triggerId: `fo-confirm:${conv}`, reason: `${cfg.owner} approved the message Fo was holding; Fo replied: ${st.summary?.slice(0, 500) ?? st.state}` }, { dealId: req.params.id });
+    worker.kick();
+    return { ok: true, foState: st.state, foReply: st.summary?.slice(0, 300) };
+  });
+
   /** Plain-language scenario -> item + both sides' mandates, for the owner to review before creating. */
   app.post<{ Body: { text?: string } }>('/api/scenarios/parse', async (req, reply) => {
     const text = req.body?.text?.trim();
@@ -88,7 +111,7 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
   });
 
   /** Create this proxy's side of a deal. The dashboard calls every proxy with the same id and that side's mandate. */
-  app.post<{ Body: { id?: string; item?: string; mandate?: Mandate; channelPref?: string; start?: boolean; counterparty?: { name?: string; phone?: string } } }>('/api/deals', async (req, reply) => {
+  app.post<{ Body: { id?: string; item?: string; mandate?: Mandate; channelPref?: string; start?: boolean; counterparty?: { name?: string; phone?: string }; strategy?: string } }>('/api/deals', async (req, reply) => {
     const b = req.body ?? {};
     const id = b.id?.trim() ?? '';
     if (!/^PD-[A-Z0-9]{4,}$/.test(id)) return reply.code(400).send({ error: 'id must look like PD-1A2B3C' });
@@ -99,6 +122,8 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     const human = b.counterparty?.phone?.replace(/[\s().-]/g, '');
     if (human && !/^\+?[\d\s().-]{10,}$/.test(human)) return reply.code(400).send({ error: 'counterparty phone must be a phone number, e.g. +1 415 555 0100' });
     const channelPref = (b.channelPref ?? (human ? 'text' : 'auto')) as ChannelPref;
+    const strategy = (b.strategy ?? 'coach') as Strategy;
+    if (!STRATEGIES.includes(strategy)) return reply.code(400).send({ error: `strategy must be ${STRATEGIES.join('|')}` });
     if (!CHANNEL_PREFS.includes(channelPref)) return reply.code(400).send({ error: `channelPref must be ${CHANNEL_PREFS.join('|')}` });
     const m = b.mandate;
     const strs = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
@@ -112,16 +137,18 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
       ? { name: b.counterparty?.name?.trim() || (cfg.role === 'buyer' ? 'the seller' : 'the buyer'), kind: 'human' as const, phone: human }
       : { name: cfg.counterparty.name, kind: 'fo' as const, phone: cfg.counterparty.phone, email: cfg.counterparty.email };
     db.insert(deals).values({
-      id, role: cfg.role, item: b.item.trim(), stage: 'NEGOTIATING', status: 'active', channelPref, createdAt: now(), counterparty,
+      id, role: cfg.role, item: b.item.trim(), stage: 'NEGOTIATING', status: 'active', channelPref, strategy, createdAt: now(), counterparty,
     }).run();
     db.insert(mandates).values({ dealId: id, data: m }).run();
-    store.event(id, 'DealCreated', 'human', { item: b.item.trim(), channelPref, from: 'dashboard', marketplace: Boolean(human), counterparty: counterparty.name });
+    store.event(id, 'DealCreated', 'human', { item: b.item.trim(), channelPref, from: 'dashboard', marketplace: Boolean(human), counterparty: counterparty.name, strategy });
     // Brief our Fo before anything else, so it can negotiate if the other side calls first.
     store.enqueue('brief', {}, { dealId: id });
     if (b.start !== false) {
       const reason = human
         ? cfg.role === 'buyer'
-          ? `Deal created. ${counterparty.name} listed this on Facebook Marketplace: ${b.item.trim()}. ${channelPref === 'call' ? 'Call them about the listing' : 'Text them first about the listing, Marketplace style,'} and start discovering their interests. Payment is in person only; nothing is paid through Fo.`
+          ? strategy === 'handoff' && channelPref !== 'call'
+            ? `Deal created in HAND-OFF mode. ${counterparty.name} listed this on Facebook Marketplace: ${b.item.trim()}. Build your complete negotiation strategy now and give it to Fo with handoff_plan (Fo sends your opener). Payment is in person only; nothing is paid through Fo.`
+            : `Deal created. ${counterparty.name} listed this on Facebook Marketplace: ${b.item.trim()}. ${channelPref === 'call' ? 'Call them about the listing' : 'Text them first about the listing, Marketplace style,'} and start discovering their interests. Payment is in person only; nothing is paid through Fo.`
           : `Deal created. You listed this on Facebook Marketplace: ${b.item.trim()}. ${counterparty.name} is interested; ${channelPref === 'call' ? 'they will call you, or' : ''} text them to start. Payment is in person only.`
         : cfg.role === 'seller'
         ? `Deal created. You are selling: ${b.item.trim()}. ${cfg.counterparty.name} (the buyer) will call you; you never place calls. Your Fo is being briefed to negotiate and close live when it answers. Do not contact them now; schedule a follow-up and act on the call transcript when it arrives.`
@@ -167,7 +194,7 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     }
     store.event(d.id, 'Command', 'human', { type });
     if (type === 'pause') { store.setStatus(d.id, 'paused'); store.cancelPending(d.id, 'turn'); }
-    else if (type === 'resume') { store.setStatus(d.id, 'active'); store.enqueue('turn', { triggerId: `resume:${Date.now()}`, reason: 'Owner resumed the deal' }, { dealId: d.id }); }
+    else if (type === 'resume') { store.setStatus(d.id, 'active'); worker.ensureBriefed(d.id); store.enqueue('turn', { triggerId: `resume:${Date.now()}`, reason: 'Owner resumed the deal' }, { dealId: d.id }); }
     else if (type === 'check') worker.checkNow();
     else if (type === 'nudge') store.enqueue('turn', { triggerId: `nudge:${Date.now()}`, reason: 'Owner nudged: re-check the deal and act' }, { dealId: d.id });
     else if (type === 'abandon') { store.setStatus(d.id, 'abandoned'); store.setStage(d.id, 'ABANDONED'); store.cancelPending(d.id, 'turn'); }

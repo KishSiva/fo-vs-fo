@@ -6,13 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { request, useHealth } from "@/lib/api";
 import { useProxy } from "@/lib/proxy";
-import type { ChannelPref, ParsedListing } from "@/lib/types";
+import type { ChannelPref, ParsedListing, Strategy } from "@/lib/types";
 import { cn, money } from "@/lib/utils";
 
 // The Impossible E-Bike (scenarios/the-impossible-ebike.md): price alone can't work; the furniture bundle can.
 const EXAMPLE_LISTING =
   "FOR SALE: 2023 Rad Power RadCity 5 Plus e-bike (step-thru, grey), ~800 miles. Always stored indoors, new brake pads in August. " +
-  "Charger included. $1,400. Pickup in the Mission, SF. Listed by Maya.";
+  "Charger included. $1,400. Pickup in the Mission, SF.";
 const EXAMPLE_BRIEF =
   "I just moved to SF for a new job in SoMa; first day is Monday 9am and I need the bike before then (bus 40 min, bike 18). " +
   "My studio is unfurnished: mattress on the floor, working at the kitchen counter. $950 is my absolute max (it's what's left in savings), " +
@@ -24,6 +24,11 @@ const CHANNELS: { value: ChannelPref; label: string }[] = [
   { value: "text", label: "Text" },
   { value: "call", label: "Phone call" },
   { value: "auto", label: "Agent picks" },
+];
+
+const STRATEGIES: { value: Strategy; label: string; hint: string }[] = [
+  { value: "handoff", label: "Claude plans, Fo negotiates", hint: "Claude builds the whole strategy first and hands it to Fo in one go. Fo runs the conversation; Claude watches and steps in." },
+  { value: "coach", label: "Claude coaches live", hint: "Claude reads every reply and tells Fo the next move." },
 ];
 
 const newId = () => `PD-${Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
@@ -49,6 +54,7 @@ export function MarketplacePage() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [channel, setChannel] = useState<ChannelPref>("text");
+  const [strategy, setStrategy] = useState<Strategy>("handoff");
   const [parsed, setParsed] = useState<ParsedListing | null>(null);
   const [busy, setBusy] = useState<"parse" | "create" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +85,7 @@ export function MarketplacePage() {
     try {
       await request(proxy.url, "/api/deals", {
         method: "POST",
-        body: JSON.stringify({ id, item: parsed.item, mandate: parsed.mandate, start: true, channelPref: channel, counterparty: { name: name.trim(), phone: phone.trim() } }),
+        body: JSON.stringify({ id, item: parsed.item, mandate: parsed.mandate, start: true, channelPref: channel, strategy, counterparty: { name: name.trim(), phone: phone.trim() } }),
       });
       navigate(`/deals/${id}`);
     } catch (e) {
@@ -207,6 +213,15 @@ export function MarketplacePage() {
               {channel !== "text" && (
                 <span className="text-xs text-slate-500">Fo negotiates live on the call, then texts to lock it in after your YES.</span>
               )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-500">Strategy</span>
+              {STRATEGIES.map((st) => (
+                <Button key={st.value} size="sm" title={st.hint} variant={strategy === st.value ? "default" : "outline"} onClick={() => setStrategy(st.value)}>
+                  {st.label}
+                </Button>
+              ))}
+              <span className="text-xs text-slate-500">{STRATEGIES.find((st) => st.value === strategy)?.hint}</span>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <Button onClick={create} disabled={busy !== null || !canCreate} className={cn(!canCreate && "opacity-50")}>

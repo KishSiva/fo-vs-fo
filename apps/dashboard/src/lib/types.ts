@@ -37,8 +37,12 @@ export interface Deal {
   status: "active" | "paused" | "closed" | "abandoned";
   counterparty: { name: string; kind: "fo" | "human" | "business"; phone?: string; email?: string };
   channelPref: ChannelPref;
+  strategy?: Strategy;
   createdAt: string;
 }
+
+/** coach: Claude guides Fo move by move. handoff: Claude plans up front, Fo negotiates. */
+export type Strategy = "coach" | "handoff";
 
 export interface Mandate {
   openingOffer: number;

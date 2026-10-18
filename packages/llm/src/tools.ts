@@ -53,6 +53,30 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'handoff_plan',
+    description: 'Hand-off strategy: give Fo your complete negotiation plan in one go, then let Fo negotiate on its own. Fo gets it as a standing instruction and sends your opener now. Server checks the ladder against your mandate; Fo never sees your real limit. Call it once, at the start; use brief_fo later for small changes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        opener: { type: 'string', description: 'The exact first text Fo sends now (AI disclosure first, Marketplace style, no price)' },
+        discovery: { type: 'array', items: { type: 'string' }, description: 'Questions to ask before bargaining, in order' },
+        interests: { type: 'array', items: { type: 'string' }, description: 'What to listen for and how to use it (deadline, reason for selling, items they want gone)' },
+        ladder: {
+          type: 'array',
+          description: 'Counter offers in order, one per round, each with the reason Fo gives',
+          items: { type: 'object', properties: { amount: { type: 'number' }, reason: { type: 'string' } }, required: ['amount', 'reason'], additionalProperties: false },
+        },
+        trades: { type: 'array', items: { type: 'string' }, description: 'Non-price trades to offer (pickup timing, carrying, bundles)' },
+        conditions: { type: 'array', items: { type: 'string' }, description: 'Must-haves and dealbreakers' },
+        checkWithOwner: { type: 'array', items: { type: 'string' }, description: 'When Fo must stop and say it will confirm with the owner' },
+        walkAway: { type: 'string', description: 'When and how to politely end it' },
+        tone: { type: 'string' },
+      },
+      required: ['opener', 'discovery', 'interests', 'ladder', 'trades', 'conditions', 'checkWithOwner', 'walkAway', 'tone'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'request_approval',
     description: 'Ask the owner to approve something. Tier 1 = share address/contact, tier 2 = accept at/near limit or book paid courier, tier 3 = move money/refund. Pauses the deal until decided.',
     input_schema: {

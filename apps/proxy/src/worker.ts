@@ -1,8 +1,8 @@
-import { approvals, now } from '@proxydeal/core';
-import { eq } from 'drizzle-orm';
+import { approvals, events, now, type Channel } from '@proxydeal/core';
+import { and, eq, sql } from 'drizzle-orm';
 import type { FoAdapter } from '@proxydeal/fo';
 import type { Config } from './config.js';
-import { BRIEF_VERSION, briefFo, completeAction } from './handlers.js';
+import { BRIEF_VERSION, autoConfirm, briefFo, completeAction } from './handlers.js';
 import { runTurn, prewarm } from './orchestrator.js';
 import { pollInbound } from './inbound.js';
 import { shareCall, type CallCopy } from './calls.js';
@@ -82,6 +82,15 @@ export class Worker {
           else {
             this.store.finishJob(job.id, 'failed');
             if (job.dealId) this.store.event(job.dealId, 'JobFailed', 'system', { type: job.type, error: String(e) });
+            // A failed turn leaves the deal with nothing scheduled, so it would stall for good (e.g. after a network
+            // drop). Try the same trigger again later, backing off, a few times.
+            const p = job.payload as { triggerId?: string; reason?: string; revived?: number };
+            const revived = p.revived ?? 0;
+            if (job.type === 'turn' && job.dealId && revived < 4) {
+              const inMs = 2 * 60_000 * 2 ** revived;
+              this.store.enqueue('turn', { ...p, triggerId: `${p.triggerId}:retry${revived + 1}`, revived: revived + 1 }, { dealId: job.dealId, inMs });
+              this.store.event(job.dealId, 'FollowupScheduled', 'system', { runAt: new Date(Date.now() + inMs).toISOString(), reason: 'Retrying a turn that failed (network or API error)', tactic: 'retry' });
+            }
           }
         }
         this.lastBeat = now();
@@ -112,7 +121,20 @@ export class Worker {
         } finally { this.store.enqueue('cache_warm', {}, { inMs: REWARM_EVERY_MS }); }
         return;
       case 'fo_poll': {
-        const st = await this.fo.status(p.foTaskId);
+        let st = await this.fo.status(p.foTaskId);
+        // Fo can start working and only then stop for its owner's go-ahead: same rules as at send time.
+        if (st.state !== 'working' && !p.checkedHold) {
+          const sent = this.store.db.select().from(events).where(and(eq(events.dealId, dealId!), eq(events.kind, 'FoAction'),
+            sql`json_extract(${events.data}, '$.foConversationId') = ${p.foTaskId}`)).get()?.data as { script?: string; channel?: Channel; commits?: boolean } | undefined;
+          if (sent?.script && sent.channel) {
+            const next = await autoConfirm({ store: this.store, fo: this.fo, cfg: this.cfg, dealId: dealId! }, p.foTaskId, st, sent.script, sent.channel, sent.commits !== false);
+            if (next !== st && next.state === 'working') {
+              this.store.enqueue('fo_poll', { ...p, checkedHold: true, polls: p.polls + 1 }, { dealId: dealId!, inMs: 15_000 });
+              return;
+            }
+            st = next;
+          }
+        }
         if (st.state === 'working' && p.polls < MAX_FO_POLLS) {
           this.store.enqueue('fo_poll', { ...p, polls: p.polls + 1 }, { dealId: dealId!, inMs: 15_000 });
           return;

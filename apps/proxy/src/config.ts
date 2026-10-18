@@ -22,6 +22,20 @@ export interface Config {
   ownerNotifyPhone?: string;
   /** Off unless ALLOW_PAYMENTS=1: Fo never moves real money for a demo. */
   allowPayments: boolean;
+  /**
+   * FO_AUTO_CONFIRM=1: the owner lets the proxy answer Fo's own "OK to send?" check for messages the
+   * agent wrote and the guards passed. Off by default; never applies to payments.
+   */
+  foAutoConfirm: boolean;
+  /** Owner's timezone (IANA, e.g. America/Los_Angeles) so the agent schedules and reports in local time. */
+  timezone: string;
+  /**
+   * Experiment: SHARE_PRIVATE_WITH_FO=1 gives Fo the owner's private preferences (real limit, target, private notes)
+   * marked secret, and lets a hand-off plan contain them. Texts to the other side are still leak-checked.
+   */
+  sharePrivateWithFo: boolean;
+  /** How often to ask Fo to quote a group thread (each read is a Fo request, ~30-60s). */
+  groupPollMs: number;
   /** How often to check Fo for new texts (each new message starts a Claude turn). */
   inboundPollMs: number;
 }
@@ -57,6 +71,10 @@ export function loadConfig(argv: string[]): Config {
     peerUrl: process.env.PEER_PROXY_URL?.replace(/\/$/, '') || undefined,
     ownerNotifyPhone: process.env.OWNER_NOTIFY_PHONE || undefined,
     allowPayments: process.env.ALLOW_PAYMENTS === '1',
+    foAutoConfirm: process.env.FO_AUTO_CONFIRM === '1',
+    timezone: process.env.OWNER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    sharePrivateWithFo: process.env.SHARE_PRIVATE_WITH_FO === '1',
+    groupPollMs: Number(process.env.GROUP_POLL_MS ?? 45_000),
     inboundPollMs: Number(process.env.INBOUND_POLL_MS ?? 30_000),
   };
 }

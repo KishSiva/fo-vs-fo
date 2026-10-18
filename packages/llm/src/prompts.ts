@@ -68,8 +68,23 @@ ${NEGOTIATION_PLAYBOOK}`;
 export interface DealStyle {
   /** The other side is a real person texting by hand (Facebook Marketplace style). */
   marketplace: boolean;
+  /** coach: guide Fo move by move. handoff: plan everything up front, hand it to Fo, then monitor. */
+  strategy?: 'coach' | 'handoff';
+  /** Whether the hand-off plan has been given to Fo already. */
+  planHandedOff?: boolean;
   owner: string;
   counterparty: string;
+}
+
+function handoffRules(s: DealStyle): string {
+  if (!s.planHandedOff) return `- HAND-OFF MODE, PLAN NOT YET HANDED OFF: this turn, build the complete negotiation strategy and call handoff_plan exactly once. Do not text ${s.counterparty} yourself.
+  Build it from the playbook: an opener that starts discovery; discovery questions in order; the interests to listen for and how to use each one (their deadline, why they're selling, items they need gone); a counter ladder starting at your opening offer, shrinking steps, a reason for each, ending on a precise non-round number; non-price trades; conditions and dealbreakers; when Fo must stop and say it will confirm with ${s.owner} (always before agreeing to any final price); a polite walk-away. Never put your real limit or private facts in the plan: Fo works in a group text. The server rejects a ladder past Fo's authority.`;
+  return `- HAND-OFF MODE, PLAN HANDED OFF: Fo is negotiating on its own from your plan. Monitor. Step in only when:
+  (a) Fo goes off plan or offers past its ladder: brief_fo with a correction;
+  (b) ${s.counterparty} raises something the plan doesn't cover: brief_fo with an addendum;
+  (c) Fo says it will confirm with ${s.owner}, or terms look agreed: request_approval, then tell Fo the answer with brief_fo or fo_act;
+  (d) ${s.counterparty} walks away or goes silent past your follow-up ladder.
+  Otherwise just end your turn with schedule_followup.`;
 }
 
 function styleRules(dealId: string, role: Role, s: DealStyle): string {
@@ -79,7 +94,10 @@ function styleRules(dealId: string, role: Role, s: DealStyle): string {
 - The AI disclosure still opens your first message (e.g. "Hi, this is ${s.owner}'s AI assistant"); after that a short "(${s.owner}'s AI assistant)" tag is enough.
 - Ask questions to discover their interests before you commit to price (why they're selling, their timeline, what else they need gone). Use the playbook.
 - OWNER SIGN-OFF IS REQUIRED. Before you accept a price or confirm final terms, call request_approval({tier: 2, summary, payload: {"kind": "accept", "amount": <price>}}). The proxy texts ${s.owner} and waits for their YES. Tell ${s.counterparty} you're "just confirming with ${s.owner}" if needed; that is the one acceptable stall.
+- FO IS YOUR VOICE IN A GROUP TEXT. Fo texts ${s.counterparty} in a group that also includes ${s.owner}, and Fo may reply there on its own using the plan in its briefing (FoOwnMessage events show what it said). Never write notes for ${s.owner} into that thread.
+${s.strategy === 'handoff' ? handoffRules(s) : `- COACH MODE: read the latest messages, then coach Fo: call brief_fo with the next move (the exact counter amount and reason, the question to ask, the trade to propose). Use fo_act only when you need Fo to send specific words now.`}
 - Use ask_owner for quick judgment calls mid-negotiation (e.g. "they'll throw in the sofa, do you want it?"). ${s.owner}'s replies are trusted instructions.
+- Calls in this deal never finalize anything: this overrides the general rule that calls settle the deal. Fo negotiates, then says it will confirm by text.
 - After agreement: confirm pickup place and time in writing. No real payment is made through Fo; payment is in person at pickup.`;
 }
 

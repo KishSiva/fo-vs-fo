@@ -1,5 +1,5 @@
 import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core';
-import type { ChannelPref, Counterparty, Mandate } from './types.js';
+import type { ChannelPref, Counterparty, Mandate, Strategy } from './types.js';
 
 export const deals = sqliteTable('deals', {
   id: text('id').primaryKey(),
@@ -9,6 +9,7 @@ export const deals = sqliteTable('deals', {
   status: text('status').notNull().default('active'),
   counterparty: text('counterparty', { mode: 'json' }).$type<Counterparty>().notNull(),
   channelPref: text('channel_pref').$type<ChannelPref>().notNull().default('auto'),
+  strategy: text('strategy').$type<Strategy>().notNull().default('coach'),
   createdAt: text('created_at').notNull(),
 });
 
@@ -114,7 +115,7 @@ export const processed = sqliteTable('processed', {
 });
 
 export const DDL = `
-CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, role TEXT NOT NULL, item TEXT NOT NULL, stage TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', counterparty TEXT NOT NULL, created_at TEXT NOT NULL, channel_pref TEXT NOT NULL DEFAULT 'auto');
+CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, role TEXT NOT NULL, item TEXT NOT NULL, stage TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', counterparty TEXT NOT NULL, created_at TEXT NOT NULL, channel_pref TEXT NOT NULL DEFAULT 'auto', strategy TEXT NOT NULL DEFAULT 'coach');
 CREATE TABLE IF NOT EXISTS mandates (deal_id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS offers (id INTEGER PRIMARY KEY AUTOINCREMENT, deal_id TEXT NOT NULL, "from" TEXT NOT NULL, amount REAL NOT NULL, terms TEXT NOT NULL DEFAULT '', rationale TEXT NOT NULL DEFAULT '', ts TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS commitments (id INTEGER PRIMARY KEY AUTOINCREMENT, deal_id TEXT NOT NULL, who TEXT NOT NULL, what TEXT NOT NULL, due_at TEXT, status TEXT NOT NULL DEFAULT 'open', evidence TEXT);

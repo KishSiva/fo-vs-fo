@@ -16,6 +16,8 @@ export function openDb(path: string): DB {
   const dealCols = sqlite.prepare('PRAGMA table_info(deals)').all() as { name: string }[];
   if (!dealCols.some((c) => c.name === 'channel_pref'))
     sqlite.exec("ALTER TABLE deals ADD COLUMN channel_pref TEXT NOT NULL DEFAULT 'auto'");
+  if (!dealCols.some((c) => c.name === 'strategy'))
+    sqlite.exec("ALTER TABLE deals ADD COLUMN strategy TEXT NOT NULL DEFAULT 'coach'");
   return drizzle(sqlite, { schema }) as DB;
 }
 

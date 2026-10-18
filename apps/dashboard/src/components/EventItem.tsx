@@ -18,8 +18,12 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { request } from "@/lib/api";
+import { useProxy } from "@/lib/proxy";
+import { Button } from "./ui/button";
 import type { Actor, Event } from "@/lib/types";
 import { cn, money, relative, time } from "@/lib/utils";
 import { JsonView, StageBadge } from "./common";
@@ -264,6 +268,70 @@ function render(e: Event): Rendered {
         ),
       };
     }
+    case "PlanHandedOff":
+      return {
+        icon: Gavel,
+        tone: "violet",
+        title: (
+          <>
+            Plan handed off to Fo <Muted>· Fo's limit {money(d.foCap)}</Muted>
+          </>
+        ),
+        body: (
+          <>
+            <div className="mt-1 text-xs font-semibold uppercase text-slate-500">Opener</div>
+            <Quote>{d.opener}</Quote>
+            <div className="mt-2 text-xs font-semibold uppercase text-slate-500">Counter ladder</div>
+            <ol className="ml-4 list-decimal text-slate-700">
+              {(d.ladder ?? []).map((st: { amount: number; reason: string }, n: number) => (
+                <li key={n}>
+                  <span className="font-medium">{money(st.amount)}</span> <Muted>{st.reason}</Muted>
+                </li>
+              ))}
+            </ol>
+            <Collapsible label="full plan" value={d.planText} />
+          </>
+        ),
+      };
+    case "FoOwnMessage":
+      return {
+        icon: Bot,
+        tone: "amber",
+        title: (
+          <>
+            Fo replied on its own <Muted>(group text)</Muted>
+          </>
+        ),
+        body: <Quote>{d.text}</Quote>,
+      };
+    case "FoNote":
+      return { icon: EyeOff, tone: "violet", title: <>Fo's note to the owner</>, body: <Quote>{d.text}</Quote> };
+    case "GroupThread":
+      return { icon: MessageSquare, tone: "blue", title: <>Group text: {d.title}</>, body: <Muted>{d.note}</Muted> };
+    case "FoHeld":
+      return {
+        icon: ShieldAlert,
+        tone: "amber",
+        title: <span className="text-amber-900">Fo is waiting for your go-ahead</span>,
+        body: (
+          <>
+            <div className="mt-1 text-amber-950">{d.reason}</div>
+            {d.script && <Quote>{d.script}</Quote>}
+            {d.canApprove && <ApproveInFo dealId={e.dealId} conv={d.foConversationId} />}
+          </>
+        ),
+      };
+    case "FoConfirmed":
+      return {
+        icon: CircleCheck,
+        tone: "green",
+        title: (
+          <>
+            Fo go-ahead given <Muted>· {d.by}</Muted>
+          </>
+        ),
+        body: d.foReply && <Clamp text={String(d.foReply)} />,
+      };
     case "OwnerTexted":
       return {
         icon: MessageSquare,
@@ -324,6 +392,26 @@ function render(e: Event): Rendered {
     default:
       return { icon: CircleDot, title: e.kind, body: <Collapsible label="data" value={d} /> };
   }
+}
+
+/** Owner's yes for a message Fo is holding; the proxy passes it to Fo over MCP. */
+function ApproveInFo({ dealId, conv }: { dealId: string; conv: string }) {
+  const { proxy } = useProxy();
+  const qc = useQueryClient();
+  const [done, setDone] = useState(false);
+  const m = useMutation({
+    mutationFn: () => request<{ ok: true }>(proxy.url, `/api/deals/${dealId}/fo-confirm`, { method: "POST", body: JSON.stringify({ foConversationId: conv }) }),
+    onSuccess: () => setDone(true),
+    onSettled: () => qc.invalidateQueries({ queryKey: [proxy.url] }),
+  });
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <Button size="sm" disabled={done || m.isPending} onClick={() => m.mutate()}>
+        <CircleCheck className="h-3.5 w-3.5" /> {done ? "Approved" : m.isPending ? "Approving…" : "Approve in Fo"}
+      </Button>
+      {m.isError && <span className="text-xs text-red-600">{(m.error as Error).message}</span>}
+    </div>
+  );
 }
 
 export function TierBadge({ tier }: { tier: number }) {

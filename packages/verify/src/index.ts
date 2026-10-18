@@ -53,7 +53,6 @@ export async function verify(db: DB, dealId: string, stage: string, expected: st
         cache_control: prefixCache(),
       }],
       output_config: {
-        effort: 'low',
         format: {
           type: 'json_schema',
           schema: {

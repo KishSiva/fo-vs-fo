@@ -45,6 +45,29 @@ export interface FoAdapter {
   transcript(foTaskId: string): Promise<FoTurn[]>;
   /** Private instructions to this proxy's own Fo (no outbound contact). */
   brief(dealId: string, message: string): Promise<{ foTaskId: string; status: FoStatus }>;
+  /** Answer Fo inside an existing conversation (e.g. its "OK to send?" check). */
+  reply(foTaskId: string, message: string): Promise<FoStatus>;
+  /**
+   * Group texts: Fo's MCP transcript returns only the first message, but Fo itself can read the thread.
+   * Ask it, privately and read-only, to quote everything since `since`.
+   */
+  quoteThread(conversationId: string, title: string, since: string, readerConv?: string): Promise<{ messages: QuotedMessage[]; readerConv?: string }>;
+}
+
+export interface QuotedMessage { from: string; at: string; text: string }
+
+/** Pull the first JSON array out of Fo's reply (it sometimes adds a sentence before or after). */
+export function parseQuoted(reply: string): QuotedMessage[] {
+  const start = reply.indexOf('[');
+  const end = reply.lastIndexOf(']');
+  if (start < 0 || end <= start) return [];
+  try {
+    const arr = JSON.parse(reply.slice(start, end + 1)) as unknown[];
+    return arr.flatMap((m) => {
+      const x = m as Partial<QuotedMessage>;
+      return typeof x?.text === 'string' && typeof x?.from === 'string' ? [{ from: x.from, at: String(x.at ?? ''), text: x.text }] : [];
+    });
+  } catch { return []; }
 }
 
 /** Turns a structured action into the plain-language request Fo's ask_fo expects. */
@@ -57,6 +80,8 @@ export function renderRequest(req: FoActRequest): string {
       ...req.constraints,
       'Do not share any information beyond what is written here.',
       'Do not make commitments, payments or purchases beyond what is written here.',
+      // Fo texts third parties in a group that includes its owner; private notes must never land there.
+      ...(req.channel === 'text' ? [`Send it to ${req.to}. Do not add anyone else, and never post notes meant for me in that thread.`] : []),
     ];
   const how = {
     text: `Send a text message to ${req.to}. Send exactly the message between the markers, verbatim, with no additions:`,
@@ -138,6 +163,33 @@ export class McpFoAdapter implements FoAdapter {
     const r = parseToolText(await this.fo.callTool(this.tool('call'), { message: text, newConversation: true })) as AskReply;
     if (!r.conversationId) throw new Error('Fo did not return a conversation id');
     return { foTaskId: r.conversationId, status: toStatus(r) };
+  }
+
+  async reply(foTaskId: string, message: string) {
+    const r = parseToolText(await this.fo.callTool(this.tool('text'), { message, conversationId: foTaskId })) as AskReply;
+    return toStatus(r);
+  }
+
+  /** Reuses one private reader conversation per group, so polling doesn't push real threads out of Fo's 50-item list. */
+  async quoteThread(conversationId: string, title: string, since: string, readerConv?: string) {
+    const message = 'Read-only request from my negotiation agent. Do NOT send, reply to, or contact anyone, and take no action in any thread. ' +
+      `In the SMS conversation "${title}" (conversation ${conversationId}), list every message since ${since}, oldest first, word for word, ` +
+      'from every participant including yourself. Mark your own private notes to me as from "Fo (note to owner)". ' +
+      'Reply only with a JSON array: [{"from": "<name or number>", "at": "<ISO time>", "text": "<exact text>"}]. Reply [] if there are none.';
+    const ask = (c?: string) => this.fo.callTool(this.tool('text'), c ? { message, conversationId: c } : { message, newConversation: true });
+    let raw;
+    try { raw = await ask(readerConv); }
+    catch (e) {
+      // The cached reader conversation is gone (e.g. the owner deleted Fo's conversations): start a fresh one.
+      if (!readerConv || !/does not name/.test(String(e))) throw e;
+      readerConv = undefined;
+      raw = await ask();
+    }
+    let r = parseToolText(raw) as AskReply;
+    const conv = r.conversationId ?? readerConv;
+    for (let i = 0; i < 6 && r.status === 'working' && conv; i++)
+      r = parseToolText(await this.fo.callTool(this.tool('status'), { conversationId: conv, waitSeconds: 40 })) as AskReply;
+    return { messages: r.status === 'working' ? [] : parseQuoted(r.response ?? ''), readerConv: conv };
   }
 
   async transcript(foTaskId: string): Promise<FoTurn[]> {

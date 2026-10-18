@@ -32,6 +32,13 @@ export interface Counterparty {
  * Marketplace mode: the other side is a real person texting by hand (not another Fo).
  * Texts read like Facebook Marketplace messages, and the owner signs off by text before any deal is final.
  */
+/**
+ * How Claude works with Fo on a marketplace deal. coach: Claude reads every message and coaches Fo move by move.
+ * handoff: Claude builds the whole strategy up front, hands it to Fo in one turn, then only monitors and steps in.
+ */
+export type Strategy = 'coach' | 'handoff';
+export const STRATEGIES: readonly Strategy[] = ['coach', 'handoff'];
+
 export const isMarketplace = (c: Pick<Counterparty, 'kind'>) => c.kind === 'human';
 
 export interface Mandate {

@@ -39,7 +39,7 @@ function stateMessage(ctx: Ctx, trigger: Trigger): string {
   });
   return [
     `TRIGGER: ${trigger.reason}`,
-    `NOW: ${new Date().toISOString()}`,
+    `NOW: ${new Date().toISOString()} (owner's local time: ${new Date().toLocaleString('en-US', { timeZone: cfg.timezone, weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}). Use local time for days and times in messages and when reporting to the owner.`,
     `STAGE: ${stage} (exit criteria: ${STAGE_SPECS[stage].exitCriteria})`,
     `TOOLS ALLOWED IN THIS STAGE: ${allowedTools(stage).join(', ')}`,
     `COUNTERPARTY: ${cp.name} (${cp.kind}) phone=${cp.phone ?? '-'} email=${cp.email ?? '-'}`,
@@ -67,7 +67,10 @@ function prefix(ctx: Ctx) {
   const modelId = model(deal.stage === 'NEGOTIATING' ? 'negotiate' : 'orchestrator');
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     { type: 'text', text: stableSystem(cfg.owner, cfg.role), cache_control: prefixCache() },
-    { type: 'text', text: dealSystem(dealId, deal.item, cfg.role, store.mandate(dealId), { marketplace: isMarketplace(cp), owner: cfg.owner, counterparty: cp.name }), cache_control: prefixCache() },
+    { type: 'text', text: dealSystem(dealId, deal.item, cfg.role, store.mandate(dealId), {
+      marketplace: isMarketplace(cp), owner: cfg.owner, counterparty: cp.name, strategy: deal.strategy,
+      planHandedOff: store.recentEvents(dealId, 500).some((e) => e.kind === 'PlanHandedOff'),
+    }), cache_control: prefixCache() },
   ];
   return { modelId, system };
 }

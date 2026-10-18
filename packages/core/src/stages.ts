@@ -14,7 +14,7 @@ export interface StageSpec {
 const ALWAYS = ['ask_owner', 'schedule_followup', 'verify', 'record_commitment', 'resolve_commitment', 'escalate_to_human', 'request_approval', 'transition', 'brief_fo'];
 
 export const STAGE_SPECS: Record<Stage, StageSpec> = {
-  NEGOTIATING: { next: ['AGREED', 'ABANDONED'], tools: ['propose', 'fo_act'], exitCriteria: 'Counterparty explicitly accepted a specific price in their own message', timeoutMin: 120 },
+  NEGOTIATING: { next: ['AGREED', 'ABANDONED'], tools: ['propose', 'fo_act', 'handoff_plan'], exitCriteria: 'Counterparty explicitly accepted a specific price in their own message', timeoutMin: 120 },
   AGREED: { next: ['ADDRESS_EXCHANGE', 'NEGOTIATING', 'ABANDONED'], tools: ['fo_act'], exitCriteria: 'Both sides confirmed price and terms in writing', timeoutMin: 120 },
   // Marketplace deals end here: an agreed pickup place and time is the handoff (CLOSED); courier stages are for Fo-to-Fo deals.
   ADDRESS_EXCHANGE: { next: ['LOGISTICS', 'CLOSED', 'ABANDONED'], tools: ['fo_act'], exitCriteria: 'Pickup place and time confirmed by the counterparty in their own message', timeoutMin: 240 },

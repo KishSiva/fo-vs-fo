@@ -57,6 +57,14 @@ export class MockFoAdapter implements FoAdapter {
     return this.task('Understood.', message);
   }
 
+  async reply(_foTaskId: string, _message: string): Promise<FoStatus> {
+    return { state: 'complete', summary: 'SENT', artifacts: [] };
+  }
+
+  async quoteThread() {
+    return { messages: [] as { from: string; at: string; text: string }[] };
+  }
+
   async transcript(foTaskId: string) {
     return (await this.status(foTaskId)).transcript ?? [];
   }
