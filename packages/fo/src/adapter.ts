@@ -174,7 +174,8 @@ export class McpFoAdapter implements FoAdapter {
   async quoteThread(conversationId: string, title: string, since: string, readerConv?: string) {
     const message = 'Read-only request from my negotiation agent. Do NOT send, reply to, or contact anyone, and take no action in any thread. ' +
       `In the SMS conversation "${title}" (conversation ${conversationId}), list every message since ${since}, oldest first, word for word, ` +
-      'from every participant including yourself. Mark your own private notes to me as from "Fo (note to owner)". ' +
+      'from every participant including yourself. Only messages actually texted in that thread: leave out your own context digests, directives and summaries. ' +
+      'Mark your own private notes to me as from "Fo (note to owner)". ' +
       'Reply only with a JSON array: [{"from": "<name or number>", "at": "<ISO time>", "text": "<exact text>"}]. Reply [] if there are none.';
     const ask = (c?: string) => this.fo.callTool(this.tool('text'), c ? { message, conversationId: c } : { message, newConversation: true });
     let raw;

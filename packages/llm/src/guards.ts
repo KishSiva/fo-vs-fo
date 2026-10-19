@@ -27,6 +27,9 @@ export function redactPrivate(script: string, m: Mandate, allowAmount?: number |
   let out = script;
   for (const [k, v] of Object.entries(m.secrets)) {
     if (!v) continue;
+    // A private note that is just a price (e.g. target_price=265) is not a leak when that price is our own offer.
+    const asNumber = Number(String(v).replace(/[$,\s]/g, ''));
+    if (Number.isFinite(asNumber) && allowed.includes(asNumber)) continue;
     const re = new RegExp(esc(v), 'gi');
     if (re.test(out)) { removed.push(k); out = out.replace(re, '[withheld]'); }
   }

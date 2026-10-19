@@ -176,6 +176,29 @@ describe('group texts', () => {
     expect(store.db.select().from(jobs).all().filter((j) => j.type === 'turn')).toHaveLength(1);
   });
 
+  it('ignores relabelled repeats and Fo context blocks when a later read quotes the thread differently', async () => {
+    const { store, fo } = setup();
+    const { readGroup } = await import('../apps/proxy/src/inbound.js');
+    const quote = vi.fn();
+    (fo as { quoteThread?: unknown }).quoteThread = quote;
+    quote.mockResolvedValueOnce({ readerConv: 'r1', messages: [
+      { from: '+14155550199', at: '05:14', text: 'Still available, selling because I am moving.' },
+      { from: 'Fo (note to owner)', at: '05:15', text: 'Seller is at $280, worth it for $40 more than your number?' },
+    ] });
+    await readGroup(store, fo, cfg, store.deal('PD-BIKE01')!, 'c-group', 'Group with +14155550199');
+    // After a restart: a new reader conversation labels the same lines differently and adds its own context digest.
+    quote.mockResolvedValueOnce({ readerConv: 'r2', messages: [
+      { from: 'Seller', at: '05:14', text: 'Still available, selling because I am moving.' },
+      { from: 'Fo', at: '05:15', text: 'Seller is at $280, worth it for $40 more than your number?' },
+      { from: '+14155550199', at: '05:20', text: 'Recent group messages (context only; do not re-answer them):\n[m21] Seller: $270' },
+      { from: '+14155550199', at: '05:21', text: 'ok' },
+    ] });
+    await readGroup(store, fo, cfg, store.deal('PD-BIKE01')!, 'c-group', 'Group with +14155550199');
+    const evs = store.db.select().from(events).all();
+    expect(evs.filter((e) => e.kind === 'InboundMessage').map((e) => (e.data as { text: string }).text)).toEqual(['Still available, selling because I am moving.', 'ok']);
+    expect(evs.filter((e) => e.kind === 'FoOwnMessage')).toHaveLength(0);
+  });
+
   it("gives Fo a counter ladder that stops short of the owner's real limit", async () => {
     const { counterLadder } = await import('../apps/proxy/src/handlers.js');
     const { steps, foCap } = counterLadder('buyer', mandate); // opening 700, ceiling 950
@@ -347,6 +370,13 @@ describe('regressions from the Sam run', () => {
     const m = { ...mandate, floorOrCeiling: 1200 };
     expect(redactPrivate('so $1,200 with the charger, right? $1200 works to confirm', m, [1200]).removed).toEqual([]);
     expect(redactPrivate('I can go up to $1200', m, [1125]).removed).toContain('price_limit');
+  });
+
+  it('our own offer is not redacted when it equals a private target price', async () => {
+    const { redactPrivate } = await import('../packages/llm/src/guards.js');
+    const m = { ...mandate, floorOrCeiling: 300, secrets: { target_price: '$265' } };
+    expect(redactPrivate('would $265 cash work?', m, [265])).toEqual({ script: 'would $265 cash work?', removed: [] });
+    expect(redactPrivate('he is aiming for $265', m, [240]).removed).toContain('target_price');
   });
 });
 

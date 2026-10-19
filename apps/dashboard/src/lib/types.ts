@@ -162,3 +162,30 @@ export interface ParsedScenario {
   warnings: string[];
   names: { seller: string; buyer: string };
 }
+
+export type CompKind = "new" | "refurbished" | "used" | "sold" | "listing";
+
+/** Negotiation plan drafted by Claude (with comp research) for the owner to review and edit. */
+export interface DealPlan {
+  marketRead: string;
+  askingPrice: number | null;
+  comps: { label: string; price: number; kind: CompKind; url: string }[];
+  prices: { open: number; target: number; happy: number; limit: number };
+  theirInterests: { signal: string; use: string }[];
+  opener: string;
+  discovery: string[];
+  ladder: { amount: number; reason: string }[];
+  trades: string[];
+  tactics: string[];
+  dealbreakers: string[];
+  niceToHaves: string[];
+  checkWithOwner: string[];
+  walkAway: string;
+}
+
+export interface PlanResult {
+  plan: DealPlan;
+  warnings: string[];
+  searches: number;
+  queries: string[];
+}

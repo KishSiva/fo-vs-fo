@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import { existsSync, readFileSync } from 'node:fs';
 import { and, asc, eq, gte, desc } from 'drizzle-orm';
 import { approvals, commitments, deals, events, offers, verifications, foCapabilities, redactMandate, now, CHANNEL_PREFS, STRATEGIES, mandates, type ChannelPref, type Mandate, type Strategy } from '@proxydeal/core';
-import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems } from '@proxydeal/llm';
+import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems, generatePlan, planProblems, planText, type DealPlan } from '@proxydeal/llm';
 import type { FoAdapter, MockFoAdapter } from '@proxydeal/fo';
 import { confirmText } from './handlers.js';
 import type { Store } from './store.js';
@@ -102,16 +102,28 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
   });
 
   /** Marketplace mode: pasted listing + the owner's private brief -> item + this side's mandate, for review before creating. */
-  app.post<{ Body: { listing?: string; brief?: string } }>('/api/listings/parse', async (req, reply) => {
+  /** Research comps and draft a negotiation plan for the owner to review; with previous + feedback, revise it. */
+  app.post<{ Body: { listing?: string; notes?: string; previous?: DealPlan; feedback?: string } }>('/api/plans/generate', async (req, reply) => {
     const listing = req.body?.listing?.trim();
-    const brief = req.body?.brief?.trim() ?? '';
+    const notes = req.body?.notes?.trim() ?? '';
     if (!listing) return reply.code(400).send({ error: 'Paste the listing first' });
-    if (listing.length + brief.length > 12000) return reply.code(400).send({ error: 'Keep the listing and brief under 12,000 characters' });
-    return { ...(await parseListing(cfg.role, listing, brief)), role: cfg.role, owner: cfg.owner, ownerPhone: cfg.ownerNotifyPhone ?? null };
+    if (listing.length + notes.length + (req.body?.feedback?.length ?? 0) > 12000) return reply.code(400).send({ error: 'Keep the listing and notes under 12,000 characters' });
+    return generatePlan({ role: cfg.role, owner: cfg.owner, listing, notes, previous: req.body?.previous, feedback: req.body?.feedback?.trim() });
+  });
+
+  app.post<{ Body: { listing?: string; brief?: string; plan?: DealPlan } }>('/api/listings/parse', async (req, reply) => {
+    const listing = req.body?.listing?.trim();
+    const plan = req.body?.plan;
+    const brief = [req.body?.brief?.trim(), plan && `Owner-approved negotiation plan:\n${planText(plan, cfg.role)}`].filter(Boolean).join('\n\n');
+    if (!listing) return reply.code(400).send({ error: 'Paste the listing first' });
+    if (listing.length + brief.length > 20000) return reply.code(400).send({ error: 'Keep the listing and brief under 20,000 characters' });
+    const parsed = await parseListing(cfg.role, listing, brief);
+    if (plan) parsed.mandate = applyPlan(parsed.mandate, plan);
+    return { ...parsed, role: cfg.role, owner: cfg.owner, ownerPhone: cfg.ownerNotifyPhone ?? null };
   });
 
   /** Create this proxy's side of a deal. The dashboard calls every proxy with the same id and that side's mandate. */
-  app.post<{ Body: { id?: string; item?: string; mandate?: Mandate; channelPref?: string; start?: boolean; counterparty?: { name?: string; phone?: string }; strategy?: string } }>('/api/deals', async (req, reply) => {
+  app.post<{ Body: { id?: string; item?: string; mandate?: Mandate; channelPref?: string; start?: boolean; counterparty?: { name?: string; phone?: string }; strategy?: string; plan?: DealPlan; listing?: string; brief?: string } }>('/api/deals', async (req, reply) => {
     const b = req.body ?? {};
     const id = b.id?.trim() ?? '';
     if (!/^PD-[A-Z0-9]{4,}$/.test(id)) return reply.code(400).send({ error: 'id must look like PD-1A2B3C' });
@@ -125,7 +137,12 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     const strategy = (b.strategy ?? 'coach') as Strategy;
     if (!STRATEGIES.includes(strategy)) return reply.code(400).send({ error: `strategy must be ${STRATEGIES.join('|')}` });
     if (!CHANNEL_PREFS.includes(channelPref)) return reply.code(400).send({ error: `channelPref must be ${CHANNEL_PREFS.join('|')}` });
-    const m = b.mandate;
+    if (b.plan) {
+      const bad = planProblems(cfg.role, b.plan);
+      if (bad.length) return reply.code(400).send({ error: `Fix the plan first: ${bad.join(' ')}` });
+    }
+    // The approved plan's prices are authoritative, whatever the parsed mandate says.
+    const m = b.plan ? applyPlan(b.mandate, b.plan) : b.mandate;
     const strs = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
     if (!strs(m.dealbreakers) || !strs(m.allowedShare) || !strs(m.neverShare) || typeof m.secrets !== 'object' || !Number.isInteger(m.walkAwayAt))
       return reply.code(400).send({ error: 'mandate is malformed' });
@@ -140,15 +157,19 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
       id, role: cfg.role, item: b.item.trim(), stage: 'NEGOTIATING', status: 'active', channelPref, strategy, createdAt: now(), counterparty,
     }).run();
     db.insert(mandates).values({ dealId: id, data: m }).run();
-    store.event(id, 'DealCreated', 'human', { item: b.item.trim(), channelPref, from: 'dashboard', marketplace: Boolean(human), counterparty: counterparty.name, strategy });
+    // The owner's raw listing and notes are kept with the deal so a run can be replayed exactly.
+    store.event(id, 'DealCreated', 'human', {
+      item: b.item.trim(), channelPref, from: 'dashboard', marketplace: Boolean(human), counterparty: counterparty.name, strategy,
+      ...(b.plan ? { plan: b.plan } : {}), ...(b.listing ? { listing: b.listing } : {}), ...(b.brief ? { brief: b.brief } : {}),
+    });
     // Brief our Fo before anything else, so it can negotiate if the other side calls first.
     store.enqueue('brief', {}, { dealId: id });
     if (b.start !== false) {
       const reason = human
         ? cfg.role === 'buyer'
           ? strategy === 'handoff' && channelPref !== 'call'
-            ? `Deal created in HAND-OFF mode. ${counterparty.name} listed this on Facebook Marketplace: ${b.item.trim()}. Build your complete negotiation strategy now and give it to Fo with handoff_plan (Fo sends your opener). Payment is in person only; nothing is paid through Fo.`
-            : `Deal created. ${counterparty.name} listed this on Facebook Marketplace: ${b.item.trim()}. ${channelPref === 'call' ? 'Call them about the listing' : 'Text them first about the listing, Marketplace style,'} and start discovering their interests. Payment is in person only; nothing is paid through Fo.`
+            ? `Deal created in HAND-OFF mode. ${counterparty.name} listed this on Facebook Marketplace: ${b.item.trim()}. ${b.plan ? 'Give Fo the owner-approved plan now with handoff_plan' : 'Build your complete negotiation strategy now and give it to Fo with handoff_plan'} (Fo sends your opener). Payment is in person only; nothing is paid through Fo.`
+            : `Deal created. ${counterparty.name} listed this on Facebook Marketplace: ${b.item.trim()}. ${channelPref === 'call' ? 'Call them about the listing' : 'Text them first about the listing, Marketplace style,'} and start discovering their interests${b.plan ? ', following the owner-approved plan (use its opener)' : ''}. Payment is in person only; nothing is paid through Fo.`
           : `Deal created. You listed this on Facebook Marketplace: ${b.item.trim()}. ${counterparty.name} is interested; ${channelPref === 'call' ? 'they will call you, or' : ''} text them to start. Payment is in person only.`
         : cfg.role === 'seller'
         ? `Deal created. You are selling: ${b.item.trim()}. ${cfg.counterparty.name} (the buyer) will call you; you never place calls. Your Fo is being briefed to negotiate and close live when it answers. Do not contact them now; schedule a follow-up and act on the call transcript when it arrives.`
@@ -197,7 +218,7 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     else if (type === 'resume') { store.setStatus(d.id, 'active'); worker.ensureBriefed(d.id); store.enqueue('turn', { triggerId: `resume:${Date.now()}`, reason: 'Owner resumed the deal' }, { dealId: d.id }); }
     else if (type === 'check') worker.checkNow();
     else if (type === 'nudge') store.enqueue('turn', { triggerId: `nudge:${Date.now()}`, reason: 'Owner nudged: re-check the deal and act' }, { dealId: d.id });
-    else if (type === 'abandon') { store.setStatus(d.id, 'abandoned'); store.setStage(d.id, 'ABANDONED'); store.cancelPending(d.id, 'turn'); }
+    else if (type === 'abandon') { store.setStatus(d.id, 'abandoned'); store.setStage(d.id, 'ABANDONED'); store.cancelPending(d.id, 'turn'); store.closeApprovals(d.id, 'deal abandoned'); }
     else return reply.code(400).send({ error: 'type must be check|nudge|pause|resume|abandon|channel' });
     worker.kick();
     return { ok: true };
@@ -234,4 +255,11 @@ function redactEvent<T extends { data: unknown }>(e: T): T {
     return { ...e, data: rest };
   }
   return e;
+}
+
+/** The approved plan sets the opening, the hard limit and room for its ladder's biggest step. */
+function applyPlan(m: Mandate, p: DealPlan): Mandate {
+  const steps = p.ladder.map((st, n) => Math.abs(st.amount - (n === 0 ? p.prices.open : p.ladder[n - 1].amount)));
+  const dealbreakers = [...m.dealbreakers, ...p.dealbreakers.filter((d) => !m.dealbreakers.includes(d))];
+  return { ...m, openingOffer: p.prices.open, floorOrCeiling: p.prices.limit, maxConcessionPerRound: Math.max(m.maxConcessionPerRound, ...steps), dealbreakers };
 }

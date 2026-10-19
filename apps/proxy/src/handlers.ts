@@ -387,7 +387,11 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     if (stage !== 'NEGOTIATING') throw new ToolError('Hand the plan off at the start, while negotiating.');
     const buyer = ctx.cfg.role === 'buyer';
     const share = ctx.cfg.sharePrivateWithFo;
-    const foCap = share ? mandate.floorOrCeiling : counterLadder(ctx.cfg.role, mandate).foCap;
+    // The owner approved a ladder when creating the deal: Fo may go as far as its last step (never past the limit).
+    const ownerTop = ctx.store.ownerPlan(ctx.dealId)?.ladder.at(-1)?.amount;
+    const auto = counterLadder(ctx.cfg.role, mandate).foCap;
+    const within = (a: number) => (buyer ? Math.min(a, mandate.floorOrCeiling) : Math.max(a, mandate.floorOrCeiling));
+    const foCap = share ? mandate.floorOrCeiling : ownerTop ? within(buyer ? Math.max(auto, ownerTop) : Math.min(auto, ownerTop)) : auto;
     const ladder = (i.ladder ?? []) as { amount: number; reason: string }[];
     if (!ladder.length) throw new ToolError('The ladder needs at least one counter offer.');
     const fail = (reason: string): never => {
@@ -464,7 +468,7 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     if (to === 'AGREED' && marketplace(ctx) && !ctx.store.approvedOfKind(ctx.dealId, 2, 'accept'))
       throw new ToolError(`${ctx.cfg.owner} has not signed off on the final terms. request_approval({tier: 2, summary, payload: {"kind": "accept", "amount": <price>}}) first.`);
     ctx.store.setStage(ctx.dealId, to);
-    if (to === 'ABANDONED') ctx.store.setStatus(ctx.dealId, 'abandoned');
+    if (to === 'ABANDONED') { ctx.store.setStatus(ctx.dealId, 'abandoned'); ctx.store.closeApprovals(ctx.dealId, 'deal abandoned'); }
     if (to === 'CLOSED') ctx.store.setStatus(ctx.dealId, 'closed');
     ctx.store.event(ctx.dealId, 'Transition', 'claude', { from: stage, to, reason: i.reason });
     return { stage: to };

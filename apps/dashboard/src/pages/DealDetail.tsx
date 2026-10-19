@@ -1,5 +1,5 @@
-import { CircleCheck, CircleX, Hand, Pause, Play, RefreshCw, Zap } from "lucide-react";
-import { useParams } from "react-router-dom";
+import { CircleCheck, CircleX, Film, Hand, Pause, Play, RefreshCw, Zap } from "lucide-react";
+import { Link, useParams } from "react-router-dom";
 import { DealHeader } from "@/components/DealHeader";
 import { ExpectedObserved } from "@/components/EventItem";
 import { OffersChart } from "@/components/OffersChart";
@@ -39,6 +39,9 @@ function Commands({ deal }: { deal: DealDetail }) {
         {btn("pause", Pause, "Pause", done || deal.status === "paused")}
         {btn("resume", Play, "Resume", deal.status !== "paused")}
         {btn("abandon", Hand, "Abandon", done, "destructive")}
+        <Link to={`/deals/${deal.id}/replay`} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 text-xs font-medium hover:bg-slate-100">
+          <Film className="h-3.5 w-3.5" /> Replay
+        </Link>
       </CardContent>
       <ChannelPicker deal={deal} disabled={done} />
     </Card>

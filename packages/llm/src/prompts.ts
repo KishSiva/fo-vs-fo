@@ -72,11 +72,14 @@ export interface DealStyle {
   strategy?: 'coach' | 'handoff';
   /** Whether the hand-off plan has been given to Fo already. */
   planHandedOff?: boolean;
+  /** The plan the owner reviewed and approved before the deal started, as text. */
+  ownerPlan?: string;
   owner: string;
   counterparty: string;
 }
 
 function handoffRules(s: DealStyle): string {
+  if (!s.planHandedOff && s.ownerPlan) return `- HAND-OFF MODE, PLAN NOT YET HANDED OFF: this turn, call handoff_plan exactly once, built from the OWNER-APPROVED PLAN: use its opener, discovery questions and counter ladder as written, and carry over its interests, trades, conditions, check-with-owner points and walk-away. Leave out its price targets and limits: Fo works in a group text. Do not text ${s.counterparty} yourself.`;
   if (!s.planHandedOff) return `- HAND-OFF MODE, PLAN NOT YET HANDED OFF: this turn, build the complete negotiation strategy and call handoff_plan exactly once. Do not text ${s.counterparty} yourself.
   Build it from the playbook: an opener that starts discovery; discovery questions in order; the interests to listen for and how to use each one (their deadline, why they're selling, items they need gone); a counter ladder starting at your opening offer, shrinking steps, a reason for each, ending on a precise non-round number; non-price trades; conditions and dealbreakers; when Fo must stop and say it will confirm with ${s.owner} (always before agreeing to any final price); a polite walk-away. Never put your real limit or private facts in the plan: Fo works in a group text. The server rejects a ladder past Fo's authority.`;
   return `- HAND-OFF MODE, PLAN HANDED OFF: Fo is negotiating on its own from your plan. Monitor. Step in only when:
@@ -113,5 +116,5 @@ MANDATE (PRIVATE, never disclose):
 - dealbreakers: ${m.dealbreakers.join('; ') || 'none'}
 - you may share: ${m.allowedShare.join(', ')}
 - never share: ${m.neverShare.join(', ')}
-- private facts: ${Object.entries(m.secrets).map(([k, v]) => `${k}=${v}`).join('; ') || 'none'}${style ? `\n\n${styleRules(dealId, role, style)}` : ''}`;
+- private facts: ${Object.entries(m.secrets).map(([k, v]) => `${k}=${v}`).join('; ') || 'none'}${style ? `\n\n${styleRules(dealId, role, style)}` : ''}${style?.ownerPlan ? `\n\nOWNER-APPROVED PLAN (${style.owner} reviewed this before the deal started; follow it, adapt only when the other side gives you new facts, and never say its prices or limits):\n${style.ownerPlan}` : ''}`;
 }

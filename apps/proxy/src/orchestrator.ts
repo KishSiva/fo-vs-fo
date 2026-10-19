@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { allowedTools, isMarketplace, STAGE_SPECS, type ChannelPref, type Role, type Stage } from '@proxydeal/core';
-import { anthropic, model, stableSystem, dealSystem, TOOLS, prefixCache, autoCache, trackUsage } from '@proxydeal/llm';
+import { anthropic, model, stableSystem, dealSystem, TOOLS, prefixCache, autoCache, trackUsage, planText } from '@proxydeal/llm';
 import { BRIEF_VERSION, HANDLERS, ToolError, counterpartyOf, type Ctx } from './handlers.js';
 
 const MAX_ROUNDS = 6;
@@ -64,12 +64,14 @@ function prefix(ctx: Ctx) {
   const { store, dealId, cfg } = ctx;
   const deal = store.deal(dealId)!;
   const cp = counterpartyOf(store, cfg, dealId);
+  const plan = store.ownerPlan(dealId);
   const modelId = model(deal.stage === 'NEGOTIATING' ? 'negotiate' : 'orchestrator');
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     { type: 'text', text: stableSystem(cfg.owner, cfg.role), cache_control: prefixCache() },
     { type: 'text', text: dealSystem(dealId, deal.item, cfg.role, store.mandate(dealId), {
       marketplace: isMarketplace(cp), owner: cfg.owner, counterparty: cp.name, strategy: deal.strategy,
       planHandedOff: store.recentEvents(dealId, 500).some((e) => e.kind === 'PlanHandedOff'),
+      ownerPlan: plan && planText(plan, cfg.role),
     }), cache_control: prefixCache() },
   ];
   return { modelId, system };

@@ -8,6 +8,7 @@ import { ApprovalsPage } from "@/pages/Approvals";
 import { DealDetailPage } from "@/pages/DealDetail";
 import { DealListPage } from "@/pages/DealList";
 import { MarketplacePage } from "@/pages/Marketplace";
+import { ReplayPage } from "@/pages/Replay";
 import { NewDealPage } from "@/pages/NewDeal";
 import { ScorecardPage } from "@/pages/Scorecard";
 import "./index.css";
@@ -20,6 +21,7 @@ createRoot(document.getElementById("root")!).render(
       <ProxyProvider>
         <BrowserRouter>
           <Routes>
+            <Route path="deals/:id/replay" element={<ReplayPage />} />
             <Route element={<Layout />}>
               <Route index element={<DealListPage />} />
               <Route path="new" element={<NewDealPage />} />

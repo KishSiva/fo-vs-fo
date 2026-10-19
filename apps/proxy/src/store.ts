@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, lte, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
+import type { DealPlan } from '@proxydeal/llm';
 import {
   approvals, commitments, deals, events, jobs, mandates, offers, processed, verifications, dnc, now,
   type Actor, type ChannelPref, type DB, type Mandate, type Stage, type DealStatus,
@@ -29,6 +30,12 @@ export class Store {
   deal(id: string) { return this.db.select().from(deals).where(eq(deals.id, id)).get(); }
   activeDeals() { return this.db.select().from(deals).where(eq(deals.status, 'active')).all(); }
   openDeals() { return this.db.select().from(deals).where(sql`${deals.status} in ('active','paused')`).all(); }
+  /** The negotiation plan the owner approved when creating the deal, if any. */
+  ownerPlan(id: string): DealPlan | undefined {
+    const e = this.db.select().from(events).where(and(eq(events.dealId, id), eq(events.kind, 'DealCreated'))).get();
+    return (e?.data as { plan?: DealPlan } | undefined)?.plan;
+  }
+
   mandate(id: string): Mandate {
     const m = this.db.select().from(mandates).where(eq(mandates.dealId, id)).get();
     if (!m) throw new Error(`No mandate for ${id}`);
@@ -86,6 +93,11 @@ export class Store {
     const said = note ? ` They said: "${note}"` : '';
     this.enqueue('turn', { triggerId: `approval:${id}`, reason: `Owner ${decision} tier-${a.tier} approval #${id}: ${a.summary}.${said}` }, { dealId: a.dealId });
     return row;
+  }
+  /** An abandoned deal's open approvals can no longer be acted on; close them without starting a turn. */
+  closeApprovals(dealId: string, by: string) {
+    this.db.update(approvals).set({ status: 'denied', decidedAt: now(), decidedBy: by })
+      .where(and(eq(approvals.dealId, dealId), eq(approvals.status, 'pending'))).run();
   }
   isDnc(target: string) { return Boolean(this.db.select().from(dnc).where(eq(dnc.target, target)).get()); }
   addDnc(target: string, reason: string) { this.db.insert(dnc).values({ target, reason, ts: now() }).onConflictDoNothing().run(); }

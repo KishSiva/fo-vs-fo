@@ -122,6 +122,12 @@ export function readGroups(store: Store, fo: FoAdapter, cfg: Config, open: DealR
   }
 }
 
+/**
+ * Fo sometimes quotes its own working context back as if it were a text: a digest of recent messages (lines tagged
+ * [m12]) or an instruction it got from its owner's side panel. Nobody texted those.
+ */
+export const isFoContext = (text: string) => /^\s*(recent group messages|directive from)\b/i.test(text) || /^\s*\[m\d+\]/m.test(text);
+
 const isFo = (from: string) => /^\s*fo\b|assistant/i.test(from);
 const textKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 80);
 
@@ -131,11 +137,19 @@ export async function readGroup(store: Store, fo: FoAdapter, cfg: Config, deal: 
   const cp = counterpartyOf(store, cfg, deal.id);
   const ours = new Set(store.db.select().from(events).where(and(eq(events.dealId, deal.id), eq(events.kind, 'FoAction'))).all()
     .map((e) => textKey(String((e.data as { script?: string }).script ?? ''))));
+  // Anything already on this deal's timeline, whoever Fo says sent it: Fo labels senders differently from one read to
+  // the next (e.g. after a restart opens a new reader conversation), so the sender can't be part of "seen".
+  const seen = new Set(store.db.select().from(events).where(and(eq(events.dealId, deal.id),
+    inArray(events.kind, ['InboundMessage', 'FoOwnMessage', 'FoNote', 'OwnerReply', 'OwnerTexted']))).all()
+    .map((e) => textKey(String((e.data as { text?: string }).text ?? ''))));
   const theirs: string[] = [];
   for (const m of msgs) {
+    if (isFoContext(m.text)) continue;
     const key = `grp:${conv}:${textKey(m.from)}:${textKey(m.text)}`;
-    if (store.isProcessed(key)) continue;
+    // Short replies ("yes", "ok") legitimately repeat, so only longer texts are matched on words alone.
+    if (store.isProcessed(key) || (textKey(m.text).length > 12 && seen.has(textKey(m.text)))) continue;
     store.markProcessed(key);
+    seen.add(textKey(m.text));
     if (isFo(m.from)) {
       if (ours.has(textKey(m.text))) continue; // a message the agent wrote; already on the timeline
       const note = /note/i.test(m.from);

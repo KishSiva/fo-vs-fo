@@ -13,3 +13,4 @@ dist/
 !.env.marketplace.example
 tsconfig.tsbuildinfo
 data/
+demo/clips/
