@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { and, asc, eq, gte, desc, inArray } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { approvals, commitments, deals, events, hunts, offers, verifications, foCapabilities, redactMandate, now, CHANNEL_PREFS, STRATEGIES, mandates, type ChannelPref, type Mandate, type Strategy } from '@proxydeal/core';
-import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems, generatePlan, planProblems, planText, type DealPlan } from '@proxydeal/llm';
+import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems, generatePlan, planProblems, planText, tailorPlan, type DealPlan } from '@proxydeal/llm';
 import type { FoAdapter, MockFoAdapter } from '@proxydeal/fo';
 import { confirmText } from './handlers.js';
 import type { Store } from './store.js';
@@ -202,13 +202,20 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     if (!b.plan) return reply.code(400).send({ error: 'A search needs an approved plan' });
     const huntId = `H-${randomBytes(3).toString('hex').toUpperCase()}`;
     const item = b.item?.trim() ?? '';
+    // A seller with their own listing gets the plan adapted to it (same prices and comps); the rest share it as is.
+    const plans = await Promise.all(sellers.map(async (x) => {
+      const own = x.listing?.trim();
+      if (!own || !b.plan || own === b.listing?.trim()) return b.plan;
+      try { return (await tailorPlan({ role: cfg.role, owner: cfg.owner, base: b.plan, listing: b.listing ?? item, sellerListing: own })).plan; }
+      catch (e) { store.log.warn({ err: e }, 'plan tailoring failed; using the shared plan'); return b.plan; }
+    }));
     try {
       // All or nothing: a bad seller row must not leave half a search behind.
       const deals = db.$client.transaction(() => {
         db.insert(hunts).values({ id: huntId, item, status: 'active', createdAt: now() }).run();
-        return sellers.map((x) => {
+        return sellers.map((x, n) => {
           const r = createDeal({
-            ...b, id: `PD-${randomBytes(3).toString('hex').toUpperCase()}`, counterparty: { name: x.name, phone: x.phone },
+            ...b, plan: plans[n], id: `PD-${randomBytes(3).toString('hex').toUpperCase()}`, counterparty: { name: x.name, phone: x.phone },
             item: x.listing?.trim() ? `${item}\n\nThis seller's listing: ${x.listing.trim()}` : item, listing: x.listing?.trim() || b.listing,
           }, huntId);
           if ('error' in r) throw Object.assign(new Error(r.error), { code: r.code });
