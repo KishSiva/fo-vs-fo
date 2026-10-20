@@ -1,8 +1,9 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { existsSync, readFileSync } from 'node:fs';
-import { and, asc, eq, gte, desc } from 'drizzle-orm';
-import { approvals, commitments, deals, events, offers, verifications, foCapabilities, redactMandate, now, CHANNEL_PREFS, STRATEGIES, mandates, type ChannelPref, type Mandate, type Strategy } from '@proxydeal/core';
+import { and, asc, eq, gte, desc, inArray } from 'drizzle-orm';
+import { randomBytes } from 'node:crypto';
+import { approvals, commitments, deals, events, hunts, offers, verifications, foCapabilities, redactMandate, now, CHANNEL_PREFS, STRATEGIES, mandates, type ChannelPref, type Mandate, type Strategy } from '@proxydeal/core';
 import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems, generatePlan, planProblems, planText, type DealPlan } from '@proxydeal/llm';
 import type { FoAdapter, MockFoAdapter } from '@proxydeal/fo';
 import { confirmText } from './handlers.js';
@@ -122,45 +123,48 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     return { ...parsed, role: cfg.role, owner: cfg.owner, ownerPhone: cfg.ownerNotifyPhone ?? null };
   });
 
-  /** Create this proxy's side of a deal. The dashboard calls every proxy with the same id and that side's mandate. */
-  app.post<{ Body: { id?: string; item?: string; mandate?: Mandate; channelPref?: string; start?: boolean; counterparty?: { name?: string; phone?: string }; strategy?: string; plan?: DealPlan; listing?: string; brief?: string } }>('/api/deals', async (req, reply) => {
-    const b = req.body ?? {};
+  /**
+   * Create this proxy's side of a deal (synchronous, so a search can create all its deals in one transaction).
+   * The dashboard calls every proxy with the same id and that side's mandate.
+   */
+  const createDeal = (b: DealBody, huntId?: string): { error: string; code: number } | { deal: ReturnType<typeof store.deal> } => {
+    const bad = (code: number, error: string) => ({ code, error });
     const id = b.id?.trim() ?? '';
-    if (!/^PD-[A-Z0-9]{4,}$/.test(id)) return reply.code(400).send({ error: 'id must look like PD-1A2B3C' });
-    if (store.deal(id)) return reply.code(409).send({ error: `${id} already exists` });
-    if (!b.item?.trim() || !b.mandate) return reply.code(400).send({ error: 'item and mandate are required' });
+    if (!/^PD-[A-Z0-9]{4,}$/.test(id)) return bad(400, 'id must look like PD-1A2B3C');
+    if (store.deal(id)) return bad(409, `${id} already exists`);
+    if (!b.item?.trim() || !b.mandate) return bad(400, 'item and mandate are required');
     // A pasted contact means a real person on the other end (marketplace mode): text by default, calls if the owner picks them.
     // Stored digits-only so Fo, inbound matching and the rehearsal phones all use one format.
     const human = b.counterparty?.phone?.replace(/[\s().-]/g, '');
-    if (human && !/^\+?[\d\s().-]{10,}$/.test(human)) return reply.code(400).send({ error: 'counterparty phone must be a phone number, e.g. +1 415 555 0100' });
+    if (human && !/^\+?[\d\s().-]{10,}$/.test(human)) return bad(400, 'counterparty phone must be a phone number, e.g. +1 415 555 0100');
     const channelPref = (b.channelPref ?? (human ? 'text' : 'auto')) as ChannelPref;
     const strategy = (b.strategy ?? 'coach') as Strategy;
-    if (!STRATEGIES.includes(strategy)) return reply.code(400).send({ error: `strategy must be ${STRATEGIES.join('|')}` });
-    if (!CHANNEL_PREFS.includes(channelPref)) return reply.code(400).send({ error: `channelPref must be ${CHANNEL_PREFS.join('|')}` });
+    if (!STRATEGIES.includes(strategy)) return bad(400, `strategy must be ${STRATEGIES.join('|')}`);
+    if (!CHANNEL_PREFS.includes(channelPref)) return bad(400, `channelPref must be ${CHANNEL_PREFS.join('|')}`);
     if (b.plan) {
-      const bad = planProblems(cfg.role, b.plan);
-      if (bad.length) return reply.code(400).send({ error: `Fix the plan first: ${bad.join(' ')}` });
+      const issues = planProblems(cfg.role, b.plan);
+      if (issues.length) return bad(400, `Fix the plan first: ${issues.join(' ')}`);
     }
     // The approved plan's prices are authoritative, whatever the parsed mandate says.
     const m = b.plan ? applyPlan(b.mandate, b.plan) : b.mandate;
     const strs = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
     if (!strs(m.dealbreakers) || !strs(m.allowedShare) || !strs(m.neverShare) || typeof m.secrets !== 'object' || !Number.isInteger(m.walkAwayAt))
-      return reply.code(400).send({ error: 'mandate is malformed' });
+      return bad(400, 'mandate is malformed');
     // Only this side's mandate comes here, so only this side's rules can be checked.
     const problems = mandateProblems(cfg.role, m);
-    if (problems.length) return reply.code(400).send({ error: problems.join(' ') });
+    if (problems.length) return bad(400, problems.join(' '));
 
     const counterparty = human
       ? { name: b.counterparty?.name?.trim() || (cfg.role === 'buyer' ? 'the seller' : 'the buyer'), kind: 'human' as const, phone: human }
       : { name: cfg.counterparty.name, kind: 'fo' as const, phone: cfg.counterparty.phone, email: cfg.counterparty.email };
     db.insert(deals).values({
-      id, role: cfg.role, item: b.item.trim(), stage: 'NEGOTIATING', status: 'active', channelPref, strategy, createdAt: now(), counterparty,
+      id, role: cfg.role, item: b.item.trim(), stage: 'NEGOTIATING', status: 'active', channelPref, strategy, createdAt: now(), counterparty, huntId: huntId ?? null,
     }).run();
     db.insert(mandates).values({ dealId: id, data: m }).run();
     // The owner's raw listing and notes are kept with the deal so a run can be replayed exactly.
     store.event(id, 'DealCreated', 'human', {
       item: b.item.trim(), channelPref, from: 'dashboard', marketplace: Boolean(human), counterparty: counterparty.name, strategy,
-      ...(b.plan ? { plan: b.plan } : {}), ...(b.listing ? { listing: b.listing } : {}), ...(b.brief ? { brief: b.brief } : {}),
+      ...(b.plan ? { plan: b.plan } : {}), ...(b.listing ? { listing: b.listing } : {}), ...(b.brief ? { brief: b.brief } : {}), ...(huntId ? { huntId } : {}),
     });
     // Brief our Fo before anything else, so it can negotiate if the other side calls first.
     store.enqueue('brief', {}, { dealId: id });
@@ -174,10 +178,66 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
         : cfg.role === 'seller'
         ? `Deal created. You are selling: ${b.item.trim()}. ${cfg.counterparty.name} (the buyer) will call you; you never place calls. Your Fo is being briefed to negotiate and close live when it answers. Do not contact them now; schedule a follow-up and act on the call transcript when it arrives.`
         : `Deal created. You are buying: ${b.item.trim()}. Call ${cfg.counterparty.name} (the seller) now with your opening offer and negotiate to a deal on that call. Only you place calls; the seller never calls you.`;
-      store.enqueue('turn', { triggerId: 'kickoff', reason }, { dealId: id, inMs: 1000 });
+      const others = huntId ? store.huntDeals(huntId).length - 1 : 0;
+      store.enqueue('turn', { triggerId: 'kickoff', reason: others > 0 ? `${reason} You are one of several sellers ${cfg.owner} is talking to for this item.` : reason }, { dealId: id, inMs: 1000 });
       worker.kick();
     } else store.setStatus(id, 'paused');
-    return store.deal(id);
+    return { deal: store.deal(id) };
+  };
+
+  app.post<{ Body: DealBody }>('/api/deals', async (req, reply) => {
+    const r = createDeal(req.body ?? {});
+    return 'error' in r ? reply.code(r.code).send({ error: r.error }) : r.deal;
+  });
+
+  /** A search for one item across several sellers: one approved plan, one deal per seller, at most one winner. */
+  app.post<{ Body: Omit<DealBody, 'id' | 'counterparty'> & { sellers?: { name?: string; phone?: string; listing?: string }[] } }>('/api/hunts', async (req, reply) => {
+    const b = req.body ?? {};
+    const sellers = (b.sellers ?? []).filter((x) => x.phone?.trim());
+    if (sellers.length < 2) return reply.code(400).send({ error: 'A search needs at least two sellers with phone numbers' });
+    if (sellers.length > 5) return reply.code(400).send({ error: 'Up to five sellers per search' });
+    const last10 = sellers.map((x) => String(x.phone).replace(/\D/g, '').slice(-10));
+    if (last10.some((d) => d.length < 10)) return reply.code(400).send({ error: 'Every seller needs a full phone number' });
+    if (new Set(last10).size !== last10.length) return reply.code(400).send({ error: 'Two sellers have the same phone number' });
+    if (!b.plan) return reply.code(400).send({ error: 'A search needs an approved plan' });
+    const huntId = `H-${randomBytes(3).toString('hex').toUpperCase()}`;
+    const item = b.item?.trim() ?? '';
+    try {
+      // All or nothing: a bad seller row must not leave half a search behind.
+      const deals = db.$client.transaction(() => {
+        db.insert(hunts).values({ id: huntId, item, status: 'active', createdAt: now() }).run();
+        return sellers.map((x) => {
+          const r = createDeal({
+            ...b, id: `PD-${randomBytes(3).toString('hex').toUpperCase()}`, counterparty: { name: x.name, phone: x.phone },
+            item: x.listing?.trim() ? `${item}\n\nThis seller's listing: ${x.listing.trim()}` : item, listing: x.listing?.trim() || b.listing,
+          }, huntId);
+          if ('error' in r) throw Object.assign(new Error(r.error), { code: r.code });
+          return r.deal;
+        });
+      })();
+      return { hunt: store.hunt(huntId), deals };
+    } catch (e) {
+      return reply.code((e as { code?: number }).code ?? 500).send({ error: (e as Error).message });
+    }
+  });
+
+  app.get('/api/hunts', async () => db.select().from(hunts).all().reverse());
+
+  /** A search with each seller's standing: stage, both sides' latest prices and the last message. */
+  app.get<{ Params: { id: string } }>('/api/hunts/:id', async (req, reply) => {
+    const hunt = store.hunt(req.params.id);
+    if (!hunt) return reply.code(404).send({ error: 'not found' });
+    const sellers = store.huntDeals(hunt.id).map((d) => {
+      const last = db.select().from(events).where(and(eq(events.dealId, d.id), inArray(events.kind, ['InboundMessage', 'FoAction', 'FoOwnMessage']))).orderBy(desc(events.id)).get();
+      return {
+        ...d,
+        theirs: store.lastOffer(d.id, 'counterparty')?.amount ?? null,
+        ours: store.lastOffer(d.id, 'self')?.amount ?? null,
+        pendingApproval: Boolean(store.pendingApproval(d.id)),
+        lastMessage: last ? { from: last.kind === 'InboundMessage' ? 'them' : 'us', text: String((last.data as { text?: string; script?: string }).text ?? (last.data as { script?: string }).script ?? ''), ts: last.ts } : null,
+      };
+    });
+    return { hunt, plan: sellers[0] ? store.ownerPlan(sellers[0].id) ?? null : null, sellers };
   });
 
   /** Asked by the other proxy before its Fo dials ours: is our Fo briefed to negotiate live? Briefs now if not. */
@@ -255,6 +315,11 @@ function redactEvent<T extends { data: unknown }>(e: T): T {
     return { ...e, data: rest };
   }
   return e;
+}
+
+interface DealBody {
+  id?: string; item?: string; mandate?: Mandate; channelPref?: string; start?: boolean; counterparty?: { name?: string; phone?: string };
+  strategy?: string; plan?: DealPlan; listing?: string; brief?: string;
 }
 
 /** The approved plan sets the opening, the hard limit and room for its ladder's biggest step. */

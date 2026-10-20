@@ -78,7 +78,33 @@ function amountsSaidByThem(ctx: Ctx): number[] {
   return [...new Set([...fromOffers, ...fromText])].filter((n) => n > 0);
 }
 
+const COMPETING = /\b(another|other|different)\s+(seller|buyer|listing|offer)s?\b|\bsomeone else\b|\bcompeting offers?\b/i;
+
+/**
+ * Mentions of competition must be true: there must be another live seller in this search, and any price cited for
+ * them can't be better for us than what they actually offered. Public comps and numbers already in play are fine.
+ */
+export function competitionProblem(ctx: Ctx, script: string, offerAmount?: number): string | undefined {
+  if (!COMPETING.test(script)) return undefined;
+  const live = ctx.store.siblings(ctx.dealId).filter((d) => d.status !== 'abandoned' && d.stage !== 'ABANDONED');
+  if (!live.length) return 'This message mentions another seller or offer, but there is no other live seller in this search. Never invent competition; take that part out.';
+  const buyer = ctx.cfg.role === 'buyer';
+  const real = live.map((d) => ctx.store.lastOffer(d.id, 'counterparty')?.amount).filter((n): n is number => n != null);
+  const known = new Set([...(offerAmount ? [offerAmount] : []), ...amountsSaidByThem(ctx), ...(ctx.store.ownerPlan(ctx.dealId)?.comps.map((c) => c.price) ?? [])]);
+  const claims = script.split(/(?<=[.!?])\s+|\n+/).filter((sentence) => COMPETING.test(sentence)).join(' ');
+  const cited = [...claims.matchAll(/\$\s?(\d{1,2},?\d{3}|\d{2,5})\b/g)].map((m) => Number(m[1].replace(',', ''))).filter((n) => !known.has(n));
+  const unbacked = cited.filter((x) => !real.some((a) => (buyer ? a <= x : a >= x)));
+  if (unbacked.length)
+    return `This message cites ${unbacked.map((n) => `$${n}`).join(', ')} for another seller, but no other seller has offered that${real.length ? ` (best real offer: $${buyer ? Math.min(...real) : Math.max(...real)})` : ' yet'}. Only cite real offers.`;
+  return undefined;
+}
+
 async function guarded(ctx: Ctx, mandate: Mandate, channel: Channel, script: string, offerAmount?: number) {
+  const honest = competitionProblem(ctx, script, offerAmount);
+  if (honest) {
+    ctx.store.event(ctx.dealId, 'GuardBlocked', 'system', { guard: 'honesty', reason: honest });
+    throw new ToolError(honest);
+  }
   const g = await guardOutbound({ channel, script, mandate, role: ctx.cfg.role, offerAmount, saidByThem: amountsSaidByThem(ctx) });
   if (g.removed.length) ctx.store.event(ctx.dealId, 'LeakBlocked', 'system', { removed: g.removed });
   if (!g.ok) {
@@ -322,6 +348,29 @@ export function completeAction(store: Store, dealId: string, actionId: number, c
   if (opts.triggerTurn) store.enqueue('turn', { triggerId: `action:${actionId}`, reason: `Fo finished ${channel} action #${actionId} (${st.state}): ${st.summary ?? ''}` }, { dealId });
 }
 
+/** One line per other seller in this search: name, stage and where the price stands. */
+export function othersLine(ctx: Ctx): string {
+  return ctx.store.siblings(ctx.dealId).filter((d) => d.stage !== 'ABANDONED').map((d) => {
+    const theirs = ctx.store.lastOffer(d.id, 'counterparty')?.amount;
+    return `${counterpartyOf(ctx.store, ctx.cfg, d.id).name} ${theirs != null ? `at $${theirs}` : 'no price yet'} (${d.stage.toLowerCase().replace('_', ' ')})`;
+  }).join('; ');
+}
+
+/** This deal won its search: record it, and have every other seller's agent close politely. */
+function closeOtherSellers(ctx: Ctx) {
+  const d = ctx.store.deal(ctx.dealId);
+  if (!d?.huntId) return;
+  ctx.store.setHuntWinner(d.huntId, ctx.dealId);
+  for (const sib of ctx.store.siblings(ctx.dealId)) {
+    if (sib.status === 'abandoned' || sib.status === 'closed') continue;
+    ctx.store.closeApprovals(sib.id, 'another seller won the search');
+    ctx.store.cancelPending(sib.id, 'turn');
+    ctx.store.setStatus(sib.id, 'active');
+    ctx.store.event(sib.id, 'HuntLost', 'system', { winnerDealId: ctx.dealId });
+    ctx.store.enqueue('turn', { triggerId: `hunt-won:${ctx.dealId}`, reason: `${ctx.cfg.owner} went with another seller for this item. Close politely now: one short text thanking ${counterpartyOf(ctx.store, ctx.cfg, sib.id).name}, saying ${ctx.cfg.owner} found one, without naming the other seller or price. Then transition to ABANDONED.` }, { dealId: sib.id });
+  }
+}
+
 export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknown>> = {
   async propose(ctx, i) {
     const { mandate, stage } = load(ctx);
@@ -336,6 +385,8 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
       const theirs = ctx.store.lastOffer(ctx.dealId, 'counterparty');
       if (!theirs || theirs.amount !== amount) fail(`accept=true must use the counterparty's last offer amount (${theirs?.amount ?? 'none yet'})`);
       if (!acceptable(ctx.cfg.role, mandate, amount)) fail('That price is outside your mandate; you cannot accept it.');
+      const taken = ctx.store.huntTakenBy(ctx.dealId);
+      if (taken) fail(`${ctx.cfg.owner} already has a deal with ${counterpartyOf(ctx.store, ctx.cfg, taken.id).name} for this item. Close this one politely instead.`);
       const signedOff = ctx.store.approvedAccept(ctx.dealId, amount);
       if (marketplace(ctx) && !signedOff)
         fail(`${ctx.cfg.owner} signs off on every final price in this deal. request_approval({tier: 2, summary, payload: {"kind": "accept", "amount": ${amount}}}) first; the proxy texts them.`);
@@ -430,13 +481,22 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     const tier = Number(i.tier);
     if (![1, 2, 3].includes(tier)) throw new ToolError('tier must be 1, 2 or 3');
     const payload = i.payload ?? {};
+    let summary = String(i.summary);
+    if ((payload as { kind?: string }).kind === 'accept' && ctx.store.deal(ctx.dealId)?.huntId) {
+      const taken = ctx.store.huntTakenBy(ctx.dealId);
+      if (taken) throw new ToolError(`${ctx.cfg.owner} already has a deal with ${counterpartyOf(ctx.store, ctx.cfg, taken.id).name} for this item. Close this one politely instead.`);
+      const waiting = ctx.store.siblingAwaitingAccept(ctx.dealId);
+      if (waiting) throw new ToolError(`${ctx.cfg.owner} is deciding on ${counterpartyOf(ctx.store, ctx.cfg, waiting.id).name}'s offer right now. Keep this seller warm ("just confirming a couple of things") and ask again after that decision.`);
+      const others = othersLine(ctx);
+      if (others) summary += `\nOther sellers: ${others}.`;
+    }
     const row = ctx.store.db.insert(approvals).values({
-      dealId: ctx.dealId, tier, summary: i.summary, payload, payloadHash: hashPayload(payload), createdAt: now(),
+      dealId: ctx.dealId, tier, summary, payload, payloadHash: hashPayload(payload), createdAt: now(),
     }).returning().get();
     ctx.store.setStatus(ctx.dealId, 'paused');
     ctx.store.cancelPending(ctx.dealId, 'turn');
-    ctx.store.event(ctx.dealId, 'ApprovalRequested', 'claude', { approvalId: row.id, tier, summary: i.summary, payload });
-    const sms = await textOwner(ctx, `${i.summary}\nReply YES to approve or NO to decline (or reply with what you'd like instead).`, 'approval', row.id)
+    ctx.store.event(ctx.dealId, 'ApprovalRequested', 'claude', { approvalId: row.id, tier, summary, payload });
+    const sms = await textOwner(ctx, `${summary}\nReply YES to approve or NO to decline (or reply with what you'd like instead).`, 'approval', row.id)
       .catch((e) => ({ texted: false, note: `Texting the owner failed (${e instanceof Error ? e.message : e}); they can decide on the dashboard.` }));
     return { approvalId: row.id, status: 'pending', ownerTexted: sms.texted, note: 'Deal is paused until the owner decides. End your turn now.' };
   },
@@ -465,12 +525,15 @@ export const HANDLERS: Record<string, (ctx: Ctx, input: Input) => Promise<unknow
     if (!canTransition(stage, to)) throw new ToolError(`Cannot go from ${stage} to ${to}`);
     if (requiresVerification(stage, to) && !ctx.store.lastVerification(ctx.dealId, stage)?.passed)
       throw new ToolError(`Leaving ${stage} needs a passed verify({stage: "${stage}"}) first.`);
+    const taken = to === 'AGREED' ? ctx.store.huntTakenBy(ctx.dealId) : undefined;
+    if (taken) throw new ToolError(`${ctx.cfg.owner} already has a deal with ${counterpartyOf(ctx.store, ctx.cfg, taken.id).name} for this item. Close this one politely instead.`);
     if (to === 'AGREED' && marketplace(ctx) && !ctx.store.approvedOfKind(ctx.dealId, 2, 'accept'))
       throw new ToolError(`${ctx.cfg.owner} has not signed off on the final terms. request_approval({tier: 2, summary, payload: {"kind": "accept", "amount": <price>}}) first.`);
     ctx.store.setStage(ctx.dealId, to);
     if (to === 'ABANDONED') { ctx.store.setStatus(ctx.dealId, 'abandoned'); ctx.store.closeApprovals(ctx.dealId, 'deal abandoned'); }
     if (to === 'CLOSED') ctx.store.setStatus(ctx.dealId, 'closed');
     ctx.store.event(ctx.dealId, 'Transition', 'claude', { from: stage, to, reason: i.reason });
+    if (to === 'AGREED') closeOtherSellers(ctx);
     return { stage: to };
   },
 

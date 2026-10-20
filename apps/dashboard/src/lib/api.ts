@@ -10,6 +10,7 @@ import type {
   DealDetail,
   Event,
   Health,
+  HuntDetail,
   Offer,
   Scorecard,
   Verification,
@@ -53,6 +54,7 @@ export const useOffers = (id: string) => usePoll<Offer[]>(`/api/deals/${id}/offe
 export const useCommitments = (id: string) => usePoll<Commitment[]>(`/api/deals/${id}/commitments`);
 export const useVerifications = (id: string) => usePoll<Verification[]>(`/api/deals/${id}/verifications`);
 export const usePendingApprovals = () => usePoll<Approval[]>("/api/approvals?status=pending");
+export const useHunt = (id: string) => usePoll<HuntDetail>(`/api/hunts/${id}`);
 export const useScorecard = () => usePoll<Scorecard>("/api/scorecard");
 
 /** Incrementally polls events with ?after=<last ts> and appends (deduped by id). */

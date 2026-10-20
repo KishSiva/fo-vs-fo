@@ -18,6 +18,8 @@ export function openDb(path: string): DB {
     sqlite.exec("ALTER TABLE deals ADD COLUMN channel_pref TEXT NOT NULL DEFAULT 'auto'");
   if (!dealCols.some((c) => c.name === 'strategy'))
     sqlite.exec("ALTER TABLE deals ADD COLUMN strategy TEXT NOT NULL DEFAULT 'coach'");
+  if (!dealCols.some((c) => c.name === 'hunt_id'))
+    sqlite.exec('ALTER TABLE deals ADD COLUMN hunt_id TEXT');
   return drizzle(sqlite, { schema }) as DB;
 }
 

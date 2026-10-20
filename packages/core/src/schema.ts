@@ -11,6 +11,17 @@ export const deals = sqliteTable('deals', {
   channelPref: text('channel_pref').$type<ChannelPref>().notNull().default('auto'),
   strategy: text('strategy').$type<Strategy>().notNull().default('coach'),
   createdAt: text('created_at').notNull(),
+  /** Set when this deal is one of several sellers in a search for the same item. */
+  huntId: text('hunt_id'),
+});
+
+/** A search for one item across several sellers: one plan, one deal per seller, at most one winner. */
+export const hunts = sqliteTable('hunts', {
+  id: text('id').primaryKey(),
+  item: text('item').notNull(),
+  status: text('status').notNull().default('active'),
+  winnerDealId: text('winner_deal_id'),
+  createdAt: text('created_at').notNull(),
 });
 
 export const mandates = sqliteTable('mandates', {
@@ -115,7 +126,8 @@ export const processed = sqliteTable('processed', {
 });
 
 export const DDL = `
-CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, role TEXT NOT NULL, item TEXT NOT NULL, stage TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', counterparty TEXT NOT NULL, created_at TEXT NOT NULL, channel_pref TEXT NOT NULL DEFAULT 'auto', strategy TEXT NOT NULL DEFAULT 'coach');
+CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, role TEXT NOT NULL, item TEXT NOT NULL, stage TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', counterparty TEXT NOT NULL, created_at TEXT NOT NULL, channel_pref TEXT NOT NULL DEFAULT 'auto', strategy TEXT NOT NULL DEFAULT 'coach', hunt_id TEXT);
+CREATE TABLE IF NOT EXISTS hunts (id TEXT PRIMARY KEY, item TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', winner_deal_id TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS mandates (deal_id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS offers (id INTEGER PRIMARY KEY AUTOINCREMENT, deal_id TEXT NOT NULL, "from" TEXT NOT NULL, amount REAL NOT NULL, terms TEXT NOT NULL DEFAULT '', rationale TEXT NOT NULL DEFAULT '', ts TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS commitments (id INTEGER PRIMARY KEY AUTOINCREMENT, deal_id TEXT NOT NULL, who TEXT NOT NULL, what TEXT NOT NULL, due_at TEXT, status TEXT NOT NULL DEFAULT 'open', evidence TEXT);

@@ -173,15 +173,24 @@ export async function readGroup(store: Store, fo: FoAdapter, cfg: Config, deal: 
   store.enqueue('turn', { triggerId: `grp:${conv}:${Date.now()}`, reason: `New group-text messages from ${cp.name} (Fo may already have replied on its own; see FoOwnMessage events): "${text.slice(0, 1500)}"` }, { dealId: deal.id });
 }
 
-/** Our own sent words appear in the seller's thread, whatever name Fo gives the thread. */
-function dealBySentWords(store: Store, open: DealRow[], c: FoInbound) {
+/**
+ * Our own sent words appear in the seller's thread, whatever name Fo gives the thread. Several sellers in one search
+ * can get near-identical openers, so when more than one deal matches, the thread title (number or contact name) decides.
+ */
+function dealBySentWords(store: Store, open: DealRow[], c: FoInbound, cfg?: Config) {
   const ours = c.turns.filter((t) => t.role === 'assistant').map((t) => t.text.toLowerCase().replace(/[^a-z0-9]+/g, ''));
   if (!ours.length) return undefined;
-  return open.find((d) => store.db.select().from(events).where(and(eq(events.dealId, d.id), eq(events.kind, 'FoAction'))).all()
+  const matches = open.filter((d) => store.db.select().from(events).where(and(eq(events.dealId, d.id), eq(events.kind, 'FoAction'))).all()
     .some((e) => {
       const s = String((e.data as { script?: string }).script ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 60);
       return s.length > 0 && ours.some((o) => o.includes(s));
     }));
+  if (matches.length <= 1 || !cfg) return matches[0];
+  const byTitle = matches.filter((d) => {
+    const cp = counterpartyOf(store, cfg, d.id);
+    return mentionsPhone(c.title, cp.phone) || (cp.name.length > 2 && c.title.toLowerCase().includes(cp.name.toLowerCase()));
+  });
+  return byTitle.length === 1 ? byTitle[0] : undefined;
 }
 
 function handleOwnerReply(store: Store, cfg: Config, open: DealRow[], text: string, conversationId: string, foLabel?: string) {
@@ -220,7 +229,7 @@ export async function pollInbound(store: Store, fo: FoAdapter, cfg: Config) {
     // Fo texts other people in a group that includes the owner, and its MCP transcript of a group shows only the
     // first message. Register the thread with its deal; readGroups() asks Fo to quote it.
     if (isGroupThread(c)) {
-      const deal = dealBySentWords(store, open, c) || open.find((d) => mentionsPhone(c.title, counterpartyOf(store, cfg, d.id).phone));
+      const deal = dealBySentWords(store, open, c, cfg) || open.find((d) => mentionsPhone(c.title, counterpartyOf(store, cfg, d.id).phone));
       if (!deal) continue;
       // Fo reuses one group thread per phone number, and its transcript shows only the first message (from the first
       // deal), so every open deal with the same seller number shares the thread. Keyed per deal.
@@ -250,7 +259,7 @@ export async function pollInbound(store: Store, fo: FoAdapter, cfg: Config) {
     const tag = fresh.map((t) => t.text.match(DEAL_TAG)?.[0]).find(Boolean);
     const active = open.filter((d) => d.status === 'active');
     const deal = (tag && open.find((d) => d.id === tag))
-      || dealBySentWords(store, [...active, ...open.filter((d) => d.status !== 'active')], c)
+      || dealBySentWords(store, [...active, ...open.filter((d) => d.status !== 'active')], c, cfg)
       || open.find((d) => mentionsPhone(`${c.title} ${c.conversationId}`, counterpartyOf(store, cfg, d.id).phone))
       || (active.length === 1 ? active[0] : open.length === 1 ? open[0] : undefined);
     if (!deal) { done(); continue; }

@@ -9,6 +9,7 @@ import { DealDetailPage } from "@/pages/DealDetail";
 import { DealListPage } from "@/pages/DealList";
 import { MarketplacePage } from "@/pages/Marketplace";
 import { ReplayPage } from "@/pages/Replay";
+import { HuntPage } from "@/pages/Hunt";
 import { NewDealPage } from "@/pages/NewDeal";
 import { ScorecardPage } from "@/pages/Scorecard";
 import "./index.css";
@@ -27,6 +28,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="new" element={<NewDealPage />} />
               <Route path="marketplace" element={<MarketplacePage />} />
               <Route path="deals/:id" element={<DealDetailPage />} />
+              <Route path="hunts/:id" element={<HuntPage />} />
               <Route path="approvals" element={<ApprovalsPage />} />
               <Route path="scorecard" element={<ScorecardPage />} />
             </Route>

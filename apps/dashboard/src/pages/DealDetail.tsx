@@ -1,4 +1,4 @@
-import { CircleCheck, CircleX, Film, Hand, Pause, Play, RefreshCw, Zap } from "lucide-react";
+import { CircleCheck, CircleX, Film, Hand, Pause, Play, RefreshCw, Users, Zap } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { DealHeader } from "@/components/DealHeader";
 import { ExpectedObserved } from "@/components/EventItem";
@@ -144,6 +144,11 @@ export function DealDetailPage() {
             </div>
           )}
           <DealHeader deal={deal.data} stage={stage ?? deal.data.stage} />
+          {deal.data.huntId && (
+            <Link to={`/hunts/${deal.data.huntId}`} className="flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900 hover:bg-sky-100">
+              <Users className="h-4 w-4" /> One of several sellers in a search. See where they all stand →
+            </Link>
+          )}
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
             <Timeline allEvents={events.data ?? []} replay={replay} />
             <div className="flex flex-col gap-4">

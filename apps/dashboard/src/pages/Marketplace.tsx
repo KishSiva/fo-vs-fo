@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Check, ExternalLink, Lock, MessageSquareText, Phone, RefreshCw, Search, ShieldCheck, ShoppingBag, Sparkles, Target, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, ExternalLink, Lock, MessageSquareText, Phone, RefreshCw, Search, ShieldCheck, ShoppingBag, Sparkles, Target, Users, Wand2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +42,8 @@ const STRATEGIES: { value: Strategy; label: string; hint: string }[] = [
   { value: "coach", label: "Claude coaches live", hint: "Claude reads every reply and decides each move. Best for tight haggling." },
   { value: "handoff", label: "Claude plans, Fo negotiates", hint: "The plan goes to Fo in one go. Fo runs the conversation; Claude watches and steps in." },
 ];
+
+interface Seller { name: string; phone: string; listing: string }
 
 const newId = () => `PD-${Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
 
@@ -265,8 +267,8 @@ export function MarketplacePage() {
   const [searches, setSearches] = useState(0);
   const [queries, setQueries] = useState<string[]>([]);
   const [feedback, setFeedback] = useState("");
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [sellers, setSellers] = useState<Seller[]>([{ name: "", phone: "", listing: "" }]);
+  const setSeller = (i: number, patch: Partial<Seller>) => setSellers((xs) => xs.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   const [channel, setChannel] = useState<ChannelPref>("text");
   const [strategy, setStrategy] = useState<Strategy>("coach");
   const [parsed, setParsed] = useState<ParsedListing | null>(null);
@@ -311,26 +313,35 @@ export function MarketplacePage() {
         body: JSON.stringify({ listing, brief: notes, ...(withPlan && plan ? { plan: clean(plan) } : {}) }),
       });
       setParsed(p);
-      if (!name && p.listerName) setName(p.listerName);
+      if (p.listerName) setSellers((xs) => (xs[0].name ? xs : [{ ...xs[0], name: p.listerName! }, ...xs.slice(1)]));
     });
 
   const create = () =>
     run("create", async () => {
       if (!parsed) return;
+      const common = { item: parsed.item, mandate: parsed.mandate, start: true, channelPref: channel, strategy, listing, brief: notes, ...(plan ? { plan: clean(plan) } : {}) };
+      if (ready.length > 1) {
+        // Several sellers: one search, one negotiation each, at most one winner.
+        const r = await request<{ hunt: { id: string } }>(proxy.url, "/api/hunts", {
+          method: "POST",
+          body: JSON.stringify({ ...common, sellers: ready.map((x) => ({ name: x.name.trim(), phone: x.phone.trim(), listing: x.listing.trim() })) }),
+        });
+        navigate(`/hunts/${r.hunt.id}`);
+        return;
+      }
       const id = newId();
       await request(proxy.url, "/api/deals", {
         method: "POST",
-        body: JSON.stringify({
-          id, item: parsed.item, mandate: parsed.mandate, start: true, channelPref: channel, strategy,
-          counterparty: { name: name.trim(), phone: phone.trim() }, listing, brief: notes, ...(plan ? { plan: clean(plan) } : {}),
-        }),
+        body: JSON.stringify({ ...common, id, counterparty: { name: ready[0].name.trim(), phone: ready[0].phone.trim() } }),
       });
       navigate(`/deals/${id}`);
     });
 
   const m = parsed?.mandate;
   const blocked = parsed?.warnings.some((w) => /\bopens at\b/i.test(w));
-  const canCreate = parsed && phone.replace(/\D/g, "").length >= 10 && !blocked && !problems.length;
+  const ready = sellers.filter((x) => x.phone.replace(/\D/g, "").length >= 10);
+  const dupes = new Set(ready.map((x) => x.phone.replace(/\D/g, "").slice(-10))).size !== ready.length;
+  const canCreate = parsed && ready.length > 0 && !dupes && (ready.length === 1 || Boolean(plan)) && !blocked && !problems.length;
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -479,9 +490,31 @@ export function MarketplacePage() {
                 <Row k="Dealbreakers" v={m.dealbreakers.join("; ") || "none"} />
               </div>
               <div className="space-y-2 rounded-xl border border-slate-200 p-4 text-sm">
-                <div className="font-semibold">Who to text</div>
-                <input value={name} onChange={(e) => setName(e.target.value)} placeholder={`${other[0].toUpperCase()}${other.slice(1)}'s name`} className={cn(field, "py-1.5")} />
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder={`${other[0].toUpperCase()}${other.slice(1)}'s phone, e.g. +1 415 555 0100`} className={cn(field, "py-1.5")} />
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">Who to text</span>
+                  {sellers.length > 1 && <Badge variant="blue"><Users className="h-3 w-3" /> {sellers.length} sellers, one winner</Badge>}
+                </div>
+                {sellers.map((x, i) => (
+                  <div key={i} className={cn("space-y-1.5", sellers.length > 1 && "rounded-lg bg-slate-50 p-2")}>
+                    <div className="flex gap-2">
+                      <input value={x.name} onChange={(e) => setSeller(i, { name: e.target.value })} placeholder={`${other[0].toUpperCase()}${other.slice(1)}'s name`} className={cn(field, "py-1.5")} />
+                      <input value={x.phone} onChange={(e) => setSeller(i, { phone: e.target.value })} placeholder="Phone, e.g. +1 415 555 0100" className={cn(field, "py-1.5")} />
+                      {sellers.length > 1 && (
+                        <Button size="sm" variant="ghost" className="h-auto" title="Remove" onClick={() => setSellers((xs) => xs.filter((_, j) => j !== i))}>✕</Button>
+                      )}
+                    </div>
+                    {sellers.length > 1 && i > 0 && (
+                      <textarea value={x.listing} onChange={(e) => setSeller(i, { listing: e.target.value })} rows={1} placeholder="Their listing, if it's a different one (optional)" className={cn(field, "py-1.5 text-xs")} />
+                    )}
+                  </div>
+                ))}
+                {role === "buyer" && sellers.length < 5 && (
+                  <Button size="sm" variant="outline" onClick={() => setSellers((xs) => [...xs, { name: "", phone: "", listing: "" }])}>
+                    <Users className="h-3.5 w-3.5" /> Add another seller
+                  </Button>
+                )}
+                {sellers.length > 1 && !plan && <div className="text-xs text-amber-700">Several sellers share one game plan: generate one first.</div>}
+                {dupes && <div className="text-xs text-amber-700">Two sellers have the same number.</div>}
                 <div className="text-xs text-slate-500">
                   Your YES texts go to{" "}
                   {parsed.ownerPhone ? (
@@ -523,10 +556,10 @@ export function MarketplacePage() {
             </div>
             <div className="flex flex-wrap items-center gap-3 border-t pt-4">
               <Button size="lg" onClick={create} disabled={busy !== null || !canCreate}>
-                <ArrowRight className="h-4 w-4" /> {busy === "create" ? "Starting…" : "Start negotiating"}
+                <ArrowRight className="h-4 w-4" /> {busy === "create" ? "Starting…" : ready.length > 1 ? `Start with ${ready.length} sellers` : "Start negotiating"}
               </Button>
               <span className="text-xs text-slate-500">
-                {health.data?.mockFo ? "Mock Fo: nothing is really sent. Play the other side from the deal page." : `Starting ${channel === "text" ? "sends real texts" : "can place real calls"} from your Fo to ${phone || "this number"}.`}
+                {health.data?.mockFo ? "Mock Fo: nothing is really sent. Play the other side from the deal page." : `Starting ${channel === "text" ? "sends real texts" : "can place real calls"} from your Fo to ${ready.map((x) => x.name || x.phone).join(", ") || "this number"}.`}
               </span>
             </div>
           </CardContent>

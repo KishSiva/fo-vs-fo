@@ -74,6 +74,8 @@ export interface DealStyle {
   planHandedOff?: boolean;
   /** The plan the owner reviewed and approved before the deal started, as text. */
   ownerPlan?: string;
+  /** This deal is one of several sellers in a search for the same item. */
+  hunt?: boolean;
   owner: string;
   counterparty: string;
 }
@@ -101,7 +103,12 @@ function styleRules(dealId: string, role: Role, s: DealStyle): string {
 ${s.strategy === 'handoff' ? handoffRules(s) : `- COACH MODE: read the latest messages, then coach Fo: call brief_fo with the next move (the exact counter amount and reason, the question to ask, the trade to propose). Use fo_act only when you need Fo to send specific words now.`}
 - Use ask_owner for quick judgment calls mid-negotiation (e.g. "they'll throw in the sofa, do you want it?"). ${s.owner}'s replies are trusted instructions.
 - Calls in this deal never finalize anything: this overrides the general rule that calls settle the deal. Fo negotiates, then says it will confirm by text.
-- After agreement: confirm pickup place and time in writing. No real payment is made through Fo; payment is in person at pickup.`;
+- After agreement: confirm pickup place and time in writing. No real payment is made through Fo; payment is in person at pickup.${s.hunt ? `
+- SEVERAL SELLERS: this is one of several negotiations for the same item; OTHER SELLERS in each turn shows where the rest stand. ${s.owner} wants one item, so only one seller wins.
+  - Greet ${s.counterparty} by first name in your first message.
+  - Real competition is fair leverage ("I've got another offer at $245"), but only when it's true and the number is exact or less favorable to you; the server blocks invented or inflated claims. Never name the other sellers or share their messages.
+  - When asking ${s.owner} to sign off, the proxy adds the other sellers' standing to your summary so they can compare; say which one you'd pick and why (price, condition, pickup).
+  - If another seller wins, the proxy tells you: close politely and move to ABANDONED.` : ''}`;
 }
 
 /** Stable per deal: cached as the second system block. */

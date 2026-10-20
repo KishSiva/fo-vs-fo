@@ -39,6 +39,8 @@ export interface Deal {
   channelPref: ChannelPref;
   strategy?: Strategy;
   createdAt: string;
+  /** Set when this deal is one of several sellers in a search. */
+  huntId?: string | null;
 }
 
 /** coach: Claude guides Fo move by move. handoff: Claude plans up front, Fo negotiates. */
@@ -188,4 +190,25 @@ export interface PlanResult {
   warnings: string[];
   searches: number;
   queries: string[];
+}
+
+export interface Hunt {
+  id: string;
+  item: string;
+  status: "active" | "won";
+  winnerDealId: string | null;
+  createdAt: string;
+}
+
+export interface HuntSeller extends Deal {
+  theirs: number | null;
+  ours: number | null;
+  pendingApproval: boolean;
+  lastMessage: { from: "them" | "us"; text: string; ts: string } | null;
+}
+
+export interface HuntDetail {
+  hunt: Hunt;
+  plan: DealPlan | null;
+  sellers: HuntSeller[];
 }

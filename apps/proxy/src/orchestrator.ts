@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { allowedTools, isMarketplace, STAGE_SPECS, type ChannelPref, type Role, type Stage } from '@proxydeal/core';
 import { anthropic, model, stableSystem, dealSystem, TOOLS, prefixCache, autoCache, trackUsage, planText } from '@proxydeal/llm';
-import { BRIEF_VERSION, HANDLERS, ToolError, counterpartyOf, type Ctx } from './handlers.js';
+import { BRIEF_VERSION, HANDLERS, ToolError, counterpartyOf, othersLine, type Ctx } from './handlers.js';
 
 const MAX_ROUNDS = 6;
 
@@ -43,6 +43,7 @@ function stateMessage(ctx: Ctx, trigger: Trigger): string {
     `STAGE: ${stage} (exit criteria: ${STAGE_SPECS[stage].exitCriteria})`,
     `TOOLS ALLOWED IN THIS STAGE: ${allowedTools(stage).join(', ')}`,
     `COUNTERPARTY: ${cp.name} (${cp.kind}) phone=${cp.phone ?? '-'} email=${cp.email ?? '-'}`,
+    ...(deal.huntId ? [`OTHER SELLERS IN THIS SEARCH (private; never name them): ${othersLine(ctx) || 'none left'}`] : []),
     channelLine(deal.channelPref as ChannelPref, cfg.role, cp.name, isMarketplace(cp)),
     ...(isMarketplace(cp) ? [`OWNER SIGN-OFF: ${cfg.ownerNotifyPhone ? `request_approval and ask_owner text ${cfg.owner}` : `${cfg.owner} has no phone on file; request_approval waits for the dashboard and ask_owner is unavailable`}. Pending approval: ${store.pendingApproval(dealId) ? 'yes' : 'none'}.`] : []),
     store.briefedAtVersion(dealId, BRIEF_VERSION)
@@ -72,6 +73,7 @@ function prefix(ctx: Ctx) {
       marketplace: isMarketplace(cp), owner: cfg.owner, counterparty: cp.name, strategy: deal.strategy,
       planHandedOff: store.recentEvents(dealId, 500).some((e) => e.kind === 'PlanHandedOff'),
       ownerPlan: plan && planText(plan, cfg.role),
+      hunt: Boolean(deal.huntId),
     }), cache_control: prefixCache() },
   ];
   return { modelId, system };

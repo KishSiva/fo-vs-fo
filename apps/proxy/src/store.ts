@@ -3,7 +3,7 @@ import { and, asc, desc, eq, lte, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import type { DealPlan } from '@proxydeal/llm';
 import {
-  approvals, commitments, deals, events, jobs, mandates, offers, processed, verifications, dnc, now,
+  approvals, commitments, deals, events, hunts, jobs, mandates, offers, processed, verifications, dnc, now,
   type Actor, type ChannelPref, type DB, type Mandate, type Stage, type DealStatus,
 } from '@proxydeal/core';
 
@@ -29,6 +29,29 @@ export class Store {
 
   deal(id: string) { return this.db.select().from(deals).where(eq(deals.id, id)).get(); }
   activeDeals() { return this.db.select().from(deals).where(eq(deals.status, 'active')).all(); }
+  hunt(id: string) { return this.db.select().from(hunts).where(eq(hunts.id, id)).get(); }
+  huntDeals(huntId: string) { return this.db.select().from(deals).where(eq(deals.huntId, huntId)).all(); }
+  /** The other sellers in this deal's search (none when the deal stands alone). */
+  siblings(dealId: string) {
+    const d = this.deal(dealId);
+    return d?.huntId ? this.huntDeals(d.huntId).filter((x) => x.id !== dealId) : [];
+  }
+  /** Another deal in the same search already won (agreed or further along), so this one must not close. */
+  huntTakenBy(dealId: string) {
+    const d = this.deal(dealId);
+    if (!d?.huntId) return undefined;
+    const h = this.hunt(d.huntId);
+    if (h?.winnerDealId && h.winnerDealId !== dealId) return this.deal(h.winnerDealId);
+    return this.siblings(dealId).find((x) => !['NEGOTIATING', 'ABANDONED'].includes(x.stage));
+  }
+  /** A sibling already waiting on the owner's YES for a final price. */
+  siblingAwaitingAccept(dealId: string) {
+    return this.siblings(dealId).find((x) => this.db.select().from(approvals).where(and(eq(approvals.dealId, x.id), eq(approvals.status, 'pending'),
+      sql`json_extract(${approvals.payload}, '$.kind') = 'accept'`)).get());
+  }
+  setHuntWinner(huntId: string, dealId: string) {
+    this.db.update(hunts).set({ winnerDealId: dealId, status: 'won' }).where(eq(hunts.id, huntId)).run();
+  }
   openDeals() { return this.db.select().from(deals).where(sql`${deals.status} in ('active','paused')`).all(); }
   /** The negotiation plan the owner approved when creating the deal, if any. */
   ownerPlan(id: string): DealPlan | undefined {
