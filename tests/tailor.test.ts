@@ -18,11 +18,11 @@ const base: DealPlan = {
   ladder: [{ amount: 220, reason: 'as-is' }, { amount: 245, reason: 'pickup' }, { amount: 262, reason: 'final' }],
   trades: ['pick any chair'], tactics: ['label the clear-out'], dealbreakers: [], niceToHaves: [], checkWithOwner: ['any final price'], walkAway: 'leave the door open',
 };
-const toolUse = (input: object) => ({ content: [{ type: 'tool_use', name: 'submit_plan', id: 't', input }], usage: { input_tokens: 0, output_tokens: 0 } });
+const asJson = (input: object) => ({ content: [{ type: 'text', text: JSON.stringify(input) }], usage: { input_tokens: 0, output_tokens: 0 } });
 
 describe('tailoring the plan to another seller', () => {
   it("adapts the wording but keeps the owner's prices and comps", async () => {
-    reply.mockResolvedValueOnce(toolUse({ ...base, askingPrice: 280, opener: "Hi, this is Spencer's AI assistant. Is your Sayl still available?",
+    reply.mockResolvedValueOnce(asJson({ ...base, askingPrice: 280, opener: "Hi, this is Spencer's AI assistant. Is your Sayl still available?",
       discovery: ['Does the seat slider work?'], prices: { open: 100, target: 120, happy: 130, limit: 400 }, comps: [] }));
     const r = await tailorPlan({ role: 'buyer', owner: 'Spencer', base, listing: '8 Sayls, $300', sellerListing: 'One Sayl, $280 obo' });
     expect(r.tailored).toBe(true);
@@ -33,7 +33,7 @@ describe('tailoring the plan to another seller', () => {
   });
 
   it('falls back to the shared plan when the result breaks a rule', async () => {
-    reply.mockResolvedValueOnce(toolUse({ ...base, opener: 'hey is it available?' }));
+    reply.mockResolvedValueOnce(asJson({ ...base, opener: 'hey is it available?' }));
     const r = await tailorPlan({ role: 'buyer', owner: 'Spencer', base, listing: 'a', sellerListing: 'b' });
     expect(r).toEqual({ plan: base, tailored: false });
   });

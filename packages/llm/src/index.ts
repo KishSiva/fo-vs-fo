@@ -31,3 +31,4 @@ export * from './guards.js';
 export * from './cache.js';
 export * from './scenario.js';
 export * from './plan.js';
+export * from './copilot.js';

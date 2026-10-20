@@ -110,7 +110,8 @@ pnpm marketplace:mock    # rehearse offline: no real texts
 pnpm dashboard           # http://localhost:5173 -> Marketplace
 ```
 
-1. On the **Marketplace** page, paste the listing and your private goals and limits, then click **Read listing**. Check the mandate, enter the seller's name and phone, pick Text, Phone call or Agent picks, then click **Start negotiating**.
+1. On the **Marketplace** page, paste the listing and what you want, then click **Generate game plan**: Claude researches comps on the web and drafts a plan (price range, counter offers, questions, trades, tactics). Edit it or ask Claude to revise it, click **Use this plan**, enter the seller's name and phone, pick Text, Phone call or Agent picks, then click **Start negotiating**.
+   - **Several sellers:** click **Add another seller** (up to 5). They share the plan (adapted to each seller's own listing, same prices), Claude may cite real competing offers only, your YES text lists the alternatives, and once one seller wins the others are thanked and closed. The search page (`/hunts/<id>`) shows every seller side by side.
 2. **Rehearsal (mock):** the deal page shows two phones. Text Fo as the seller, and reply YES/NO as the owner.
 3. **Real run:** run `pnpm discover:fo --env .env.marketplace` once to sign in, then `pnpm marketplace`. The seller texts or answers Fo's number.
 
@@ -118,7 +119,18 @@ pnpm dashboard           # http://localhost:5173 -> Marketplace
 
 **Owner sign-off.** `request_approval` texts the owner. A reply starting with YES approves, NO declines, and anything else declines and passes the owner's words to Claude as instructions. `ask_owner` sends a quick question mid-negotiation. The dashboard Approve button still works.
 
+**Replay.** Every deal has a **Replay** page (`/deals/<id>/replay`): both phones, Claude's reasoning and the price track, replayed from the real events. Add `?autoplay=1&chrome=0` to record it.
+
 **Calls.** Fo phones the seller and negotiates live, then ends on "let me confirm with the owner and text you back". Claude reads the transcript, gets the owner's YES, and confirms by text.
+
+## 5. Messenger copilot (Chrome extension)
+
+Most Marketplace deals stay in Messenger, and Meta allows no automated sending from personal accounts. The extension in `apps/extension` works inside your own logged-in Facebook tab instead: it reads the listing and the chat, Claude drafts the next message from your game plan (limits, privacy check and "check with you" rules enforced by the proxy), and puts it in the message box. **You press Enter; it never sends on its own.**
+
+1. Run a proxy (`pnpm marketplace` or `pnpm marketplace:mock`). The extension talks to `http://localhost:4001` by default (change it under ⚙ in the panel).
+2. In Chrome open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick `apps/extension`.
+3. Open a Marketplace listing, click the ProxyDeal icon to open the side panel, then **Read this listing** → **Generate game plan**.
+4. Open the conversation with the seller, click **Read this chat** → **Draft next message**. Edit if you like, tick any decision it asks you to make, then **Put in message box** and press Enter yourself.
 
 ## Using the dashboard
 
@@ -155,6 +167,7 @@ Every Claude API call is set up for prompt caching (`packages/llm/src/cache.ts`)
 ```
 apps/proxy        orchestrator service (run once per agent): Claude tool loop, guards, job worker, Fastify API
 apps/dashboard    React + Vite dashboard
+apps/extension    Chrome extension (Messenger copilot), plain MV3, load unpacked
 packages/core     deal state machine, mandate rules, SQLite schema (Drizzle)
 packages/fo       Fo MCP client + OAuth, capability map, real and mock adapters
 packages/llm      Claude client, prompts, tool definitions, outbound guards

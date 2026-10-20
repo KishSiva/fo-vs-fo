@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ProxyDeal Copilot</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="logo">⇄</span> ProxyDeal <span class="muted">Copilot</span></div>
+    <div class="status"><span id="dot" class="dot"></span><span id="who" class="muted">connecting…</span>
+      <button id="gear" class="icon" title="Settings">⚙</button></div>
+  </header>
+
+  <section id="settings" class="card hidden">
+    <label>Proxy address<input id="proxyUrl" placeholder="http://localhost:4001" /></label>
+    <button id="saveSettings" class="ghost">Save</button>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">1</span> Game plan</h2>
+    <div id="planEmpty">
+      <label>The listing <span class="muted">(public)</span>
+        <textarea id="listing" rows="4" placeholder="Open a Marketplace listing and press “Read this listing”, or paste it here."></textarea>
+      </label>
+      <button id="readListing" class="ghost">Read this listing</button>
+      <label>What you want <span class="muted">(private)</span>
+        <textarea id="notes" rows="2" class="private" placeholder="e.g. I want one chair, Tue or Wed after 4pm."></textarea>
+      </label>
+      <button id="makePlan" class="primary">✦ Generate game plan</button>
+      <p id="planBusy" class="busy hidden"><span class="pulse"></span> Searching the web for prices and building your plan. About a minute.</p>
+    </div>
+    <div id="planView" class="hidden">
+      <div id="planTitle" class="title"></div>
+      <div class="prices">
+        <div><small>Open</small><b id="pOpen"></b></div>
+        <div><small>Target</small><b id="pTarget" class="green"></b></div>
+        <div><small>Happy</small><b id="pHappy" class="green"></b></div>
+        <div><small>🔒 Max</small><b id="pLimit" class="red"></b></div>
+      </div>
+      <p id="marketRead" class="read"></p>
+      <div id="queries" class="chips"></div>
+      <details>
+        <summary>Counter offers and comps</summary>
+        <ol id="ladder"></ol>
+        <ul id="comps" class="comps"></ul>
+      </details>
+      <button id="newPlan" class="ghost small">New plan</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">2</span> Chat</h2>
+    <button id="readChat" class="ghost">Read this chat</button>
+    <div id="chat" class="chat"></div>
+    <label>Note for Claude <span class="muted">(optional)</span><input id="note" placeholder="e.g. they seem in a hurry; offer to pick up tonight" /></label>
+    <button id="draft" class="primary">Draft next message</button>
+    <p id="draftBusy" class="busy hidden"><span class="pulse"></span> Thinking through the next move…</p>
+    <div id="result" class="hidden">
+      <div id="blocked" class="alert red hidden"></div>
+      <div id="decide" class="alert amber hidden">
+        <div id="decideText"></div>
+        <label class="check"><input type="checkbox" id="decideOk" /> I'm OK with this</label>
+      </div>
+      <div class="meta"><span id="tactic" class="chip"></span><span id="offer" class="chip blue"></span><span id="checked" class="chip green">✓ privacy-checked</span></div>
+      <textarea id="reply" rows="4"></textarea>
+      <p id="why" class="why"></p>
+      <div class="row">
+        <button id="insert" class="primary">Put in message box</button>
+        <button id="copy" class="ghost">Copy</button>
+      </div>
+    </div>
+    <p class="foot">Nothing is sent until you press Enter in Messenger.</p>
+  </section>
+
+  <p id="error" class="alert red hidden"></p>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { and, asc, eq, gte, desc, inArray } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { approvals, commitments, deals, events, hunts, offers, verifications, foCapabilities, redactMandate, now, CHANNEL_PREFS, STRATEGIES, mandates, type ChannelPref, type Mandate, type Strategy } from '@proxydeal/core';
-import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems, generatePlan, planProblems, planText, tailorPlan, type DealPlan } from '@proxydeal/llm';
+import { cacheStats, cacheTtl, parseScenario, parseListing, mandateProblems, generatePlan, planProblems, planText, tailorPlan, copilotMove, guardOutbound, type ChatLine, type DealPlan } from '@proxydeal/llm';
 import type { FoAdapter, MockFoAdapter } from '@proxydeal/fo';
 import { confirmText } from './handlers.js';
 import type { Store } from './store.js';
@@ -14,7 +14,7 @@ import { recordCall, type CallCopy } from './calls.js';
 
 export async function startApi(store: Store, cfg: Config, worker: Worker, foSignedIn: () => boolean, fo: FoAdapter, mockFo?: MockFoAdapter) {
   const app = Fastify({ logger: false });
-  await app.register(cors, { origin: [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/], methods: ['GET', 'POST'] });
+  await app.register(cors, { origin: [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/, /^chrome-extension:\/\/[a-p]{32}$/], methods: ['GET', 'POST'] });
   const db = store.db;
 
   app.get('/api/health', async () => ({
@@ -110,6 +110,39 @@ export async function startApi(store: Store, cfg: Config, worker: Worker, foSign
     if (!listing) return reply.code(400).send({ error: 'Paste the listing first' });
     if (listing.length + notes.length + (req.body?.feedback?.length ?? 0) > 12000) return reply.code(400).send({ error: 'Keep the listing and notes under 12,000 characters' });
     return generatePlan({ role: cfg.role, owner: cfg.owner, listing, notes, previous: req.body?.previous, feedback: req.body?.feedback?.trim() });
+  });
+
+  /**
+   * Messenger copilot (Chrome extension): given the approved plan and the chat so far, draft the next message for the
+   * owner to review and send themselves. Limits and the leak check are enforced here, not left to the model.
+   */
+  app.post<{ Body: { plan?: DealPlan; listing?: string; chat?: ChatLine[]; note?: string } }>('/api/copilot/next', async (req, reply) => {
+    const { plan, listing = '', note } = req.body ?? {};
+    const chat = (req.body?.chat ?? []).filter((l) => (l.from === 'me' || l.from === 'them') && typeof l.text === 'string').slice(-80);
+    if (!plan) return reply.code(400).send({ error: 'Generate a game plan first' });
+    const issues = planProblems(cfg.role, plan);
+    if (issues.length) return reply.code(400).send({ error: `Fix the plan first: ${issues.join(' ')}` });
+    const buyer = cfg.role === 'buyer';
+    const past = (a: number, b: number) => (buyer ? a > b : a < b);
+    const mandate: Mandate = {
+      ...applyPlan({ floorOrCeiling: plan.prices.limit, openingOffer: plan.prices.open, maxConcessionPerRound: 1, walkAwayAt: 8, dealbreakers: [], allowedShare: [], neverShare: ['floor', 'ceiling'], secrets: {} }, plan),
+      secrets: { target_price: `$${plan.prices.target}`, happy_price: `$${plan.prices.happy}` },
+    };
+    const saidByThem = chat.filter((l) => l.from === 'them').flatMap((l) => [...l.text.matchAll(/\$?\b(\d{1,2},?\d{3}|\d{2,5})\b/g)].map((m) => Number(m[1].replace(',', ''))));
+    const opened = chat.some((l) => l.from === 'me');
+    let extra = note;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const move = await copilotMove({ role: cfg.role, owner: cfg.owner, plan, listing, chat, note: extra });
+      if (move.offerAmount != null && past(move.offerAmount, plan.prices.limit))
+        return { ...move, reply: '', blocked: `That would offer $${move.offerAmount}, past your ${buyer ? 'max' : 'min'} of $${plan.prices.limit}. Walk away or change your limit.` };
+      if (move.offerAmount != null && past(move.offerAmount, plan.prices.happy) && !move.ownerDecision)
+        move.ownerDecision = `This offers $${move.offerAmount}, past your happy price of $${plan.prices.happy}. Send it?`;
+      const g = await guardOutbound({ channel: 'text', script: move.reply, mandate, role: cfg.role, offerAmount: move.offerAmount ?? undefined, saidByThem, skipDisclosure: opened });
+      // The owner pastes this verbatim, so a draft with anything masked out is a rejection too.
+      if (g.ok && !g.removed.length) return { ...move, reply: g.script, checked: true };
+      extra = `${note ? `${note}\n` : ''}Your last draft was rejected: ${g.reason ?? `it revealed ${g.removed.join(', ')}`}. Rewrite it.`;
+    }
+    return reply.code(422).send({ error: 'Could not draft a message that passes the privacy check; try again or write this one yourself.' });
   });
 
   app.post<{ Body: { listing?: string; brief?: string; plan?: DealPlan } }>('/api/listings/parse', async (req, reply) => {

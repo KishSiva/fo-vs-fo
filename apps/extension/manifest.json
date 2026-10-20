@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "ProxyDeal Copilot",
+  "version": "0.1.0",
+  "description": "Negotiation copilot for Facebook Marketplace: researches comps, drafts each reply from your game plan, and never sends without you.",
+  "permissions": ["sidePanel", "storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://www.messenger.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "ProxyDeal Copilot" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/marketplace/*", "https://www.facebook.com/messages/*", "https://www.messenger.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

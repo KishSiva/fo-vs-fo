@@ -84,10 +84,12 @@ export async function modelLeakCheck(script: string, m: Mandate, role: 'seller' 
 /** Full outbound guard: disclosure (reject), regex redaction (strip), model check (reject). */
 export async function guardOutbound(opts: {
   channel: Channel; script: string; mandate: Mandate; role: 'seller' | 'buyer'; offerAmount?: number; skipModel?: boolean;
+  /** Later messages in a thread that already carries the disclosure (copilot drafts the owner sends themselves). */
+  skipDisclosure?: boolean;
   /** Amounts the other side already named: repeating them is not a leak. */
   saidByThem?: number[];
 }): Promise<GuardResult> {
-  const missing = checkDisclosure(opts.channel, opts.script);
+  const missing = opts.skipDisclosure ? undefined : checkDisclosure(opts.channel, opts.script);
   if (missing) return { ok: false, script: opts.script, removed: [], reason: missing };
   const allowed = [...(opts.offerAmount !== undefined ? [opts.offerAmount] : []), ...(opts.saidByThem ?? [])];
   const { script, removed } = redactPrivate(opts.script, opts.mandate, allowed);
